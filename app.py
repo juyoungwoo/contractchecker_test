@@ -66,24 +66,35 @@ def load_text_from_file(upload) -> str:
         except Exception: continue
     return data.decode("utf-8", errors="ignore")
 
-# ---------------- Clause splitter ----------------
+# ---------------- Clause splitter (핵심 수정) ----------------
 def split_into_clauses_kokr(text: str) -> List[Clause]:
-    pat = re.compile(r"(제\s*\d+\s*조)")
-    parts = pat.split(text)
-    
-    if len(parts) <= 1: return []
+    """
+    '제 O조'를 기준으로 계약서를 정확하게 분할하는 새로운 로직.
+    finditer를 사용하여 각 조항의 시작점을 찾고, 그 사이의 텍스트를 추출하여 안정성을 높임.
+    """
+    # "제 <숫자> 조" 패턴으로 계약서 분할 기준점을 찾는다.
+    header_pat = re.compile(r"제\s*\d+\s*조")
+    matches = list(header_pat.finditer(text))
+
+    if not matches:
+        return []
 
     clauses = []
-    for i in range(1, len(parts), 2):
-        delimiter = parts[i]
-        content = parts[i+1].strip() if (i+1) < len(parts) else ""
-        full_clause_text = (delimiter + " " + content).strip()
-        title = full_clause_text.split('\n', 1)[0].strip()
+    for i, match in enumerate(matches):
+        start_pos = match.start()
+        # 다음 조항의 시작점을 현재 조항의 끝점으로 설정
+        end_pos = matches[i + 1].start() if i + 1 < len(matches) else len(text)
         
-        match = re.search(r'제\s*(\d+)\s*조', delimiter)
-        if match:
-            clause_idx = int(match.group(1))
-            clauses.append(Clause(idx=clause_idx, title=title, text=full_clause_text))
+        clause_full_text = text[start_pos:end_pos].strip()
+        
+        # 조항 제목은 첫 줄로 설정
+        title = clause_full_text.split('\n', 1)[0].strip()
+        
+        # 조항 번호 추출
+        num_match = re.search(r'제\s*(\d+)\s*조', match.group(0))
+        if num_match:
+            clause_idx = int(num_match.group(1))
+            clauses.append(Clause(idx=clause_idx, title=title, text=clause_full_text))
             
     return clauses
 
@@ -174,7 +185,6 @@ def highlight_text(text: str, quotes: List[str]) -> str:
         if not q: continue
         try:
             escaped_q = html.escape(q)
-            # 공백/줄바꿈에 유연하게 대처하기 위한 정규식
             pattern = r'\s*'.join(map(re.escape, list(q)))
             safe_text = re.sub(f'({pattern})', r'<mark>\\1</mark>', safe_text, flags=re.IGNORECASE | re.UNICODE)
         except re.error:
@@ -230,10 +240,7 @@ if 'results' in st.session_state:
     
     st.subheader("📄 검토가 필요한 조항")
     
-    # 문제가 발견된 조항들의 인덱스만 추출
     issue_clause_indices = sorted(list({idx for issue in found_issues for idx in issue.get("clause_indices", [])}))
-    
-    # 문제가 발견된 조항들만 필터링
     clauses_with_issues = [c for c in clauses if c.idx in issue_clause_indices]
 
     if not clauses_with_issues and found_issues:
@@ -246,11 +253,9 @@ if 'results' in st.session_state:
             highlighted_text = highlight_text(c.text, all_quotes)
             
             with st.container(border=True):
-                # 조항의 전체 내용 표시
                 st.markdown(f"### {html.escape(c.title)}")
                 st.markdown(f"<div style='white-space: pre-wrap; line-height: 1.7;'>{highlighted_text}</div>", unsafe_allow_html=True)
                 
-                # 해당 조항에 대한 AI의 분석 결과(설명) 표시
                 if matched_issues:
                     st.markdown("---")
                     for issue in matched_issues:
