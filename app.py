@@ -157,7 +157,10 @@ class OpenAILLM:
             "2.  **Identify Clause Numbers:** Use the `CLAUSE_LIST` to determine the correct clause number (e.g., 제14조 is clause 14).\n"
             "3.  **Find Specific Evidence:** If you find a toxic clause, you MUST pinpoint the **exact problematic sentence or phrase**.\n"
             "4.  **Explain the Risk (for '연구원'):** Clearly explain WHY that specific phrase is a problem **from the '연구원's' point of view**.\n"
-            "5.  **JSON OUTPUT:** Your output MUST be a single JSON object with this exact schema:\n"
+            "5.  **Quote Original Phrases:** Extract **the original Korean phrase(s)** as-is for the quotes. Do NOT paraphrase.\n"
+            "6.  **Focus on Specific Parts:** Try to extract as small and specific a phrase as possible (such as a sentence or clause).\n"
+            "7.  **These quotes will be highlighted in bold in the UI. Choose your evidence carefully.**\n"
+            "8.  **JSON OUTPUT:** Your output MUST be a single JSON object with this exact schema:\n"
             "    {\n"
             f"      \"issue_id\": \"{issue_id}\", \"issue_title\": \"{issue_title}\", \"found\": boolean,\n"
             "      \"explanation\": \"(Provide a clear, concise, and intuitive explanation in Korean **from the '연구원's' perspective**. Start with an emoji.)\",\n"
@@ -165,6 +168,7 @@ class OpenAILLM:
             "      \"evidence_quotes\": string[] /* IMPORTANT: If `found` is true, this array MUST contain the exact quote(s) and CANNOT be empty. */\n"
             "    }\n"
         )
+
         user = (f"## ISSUE_DEFINITION:\n{issue_definition}\n\n## CLAUSE_LIST:\n{clause_map_str}\n\n## CONTRACT:\n{payload_text}")
         try:
             resp = self.client.chat.completions.create(
@@ -183,26 +187,21 @@ class OpenAILLM:
 # ---------------- Highlight helper ----------------
 def highlight_text(text: str, quotes: List[str]) -> str:
     """
-    HTML escape와 mark 태그 중첩 문제를 방지하면서 인용문 강조.
+    인용문을 **굵게** 처리 (LLM 판단)
     """
     escaped = html.escape(text)
-
     for quote in quotes:
         quote = quote.strip()
-        if not quote:
-            continue
+        if not quote: continue
         q_escaped = html.escape(quote)
-        # 마크업이 HTML 이스케이프와 충돌하지 않도록 escape 이후 <mark> 복원
         if q_escaped in escaped:
-            escaped = escaped.replace(q_escaped, f"<mark>{q_escaped}</mark>")
+            escaped = escaped.replace(q_escaped, f"<b>{q_escaped}</b>")
         else:
-            raw_marked = f"<mark>{quote}</mark>"
+            raw_bold = f"<b>{quote}</b>"
             if quote in text:
-                escaped = escaped.replace(html.escape(quote), html.escape(raw_marked))
+                escaped = escaped.replace(html.escape(quote), html.escape(raw_bold))
+    return escaped.replace("&lt;b&gt;", "<b>").replace("&lt;/b&gt;", "</b>")
 
-
-    # 최종적으로 <mark>만 원상복구
-    return escaped.replace("&lt;mark&gt;", "<mark>").replace("&lt;/mark&gt;", "</mark>")
 
 
 # ---------------- UI ----------------
