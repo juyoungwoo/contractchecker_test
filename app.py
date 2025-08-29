@@ -102,7 +102,10 @@ def load_text_from_file(upload) -> str:
     try:
         return data.decode("utf-8")
     except Exception:
-        return data.decode("cp949", errors="ignore")
+        try:
+            return data.decode("euc-kr", errors="ignore")
+        except Exception:
+            return data.decode("latin-1", errors="ignore")
 
 
 # --------------- Clause splitter ---------------
