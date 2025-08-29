@@ -53,105 +53,73 @@ def extract_text_pdf(bio: io.BytesIO) -> str:
     return "\n\n".join(p.extract_text() or "" for p in reader.pages)
 
 def extract_text_docx(bio: io.BytesIO) -> str:
-    if not DOCX_AVAILABLE:
-        return ""
+    if not DOCX_AVAILABLE: return ""
     doc = DocxDocument(bio)
     return "\n".join(p.text for p in doc.paragraphs)
 
 def load_text_from_file(upload) -> str:
     data = upload.read()
     name = upload.name.lower()
-    if name.endswith(".pdf"):
-        return extract_text_pdf(io.BytesIO(data))
-    if name.endswith(".docx") and DOCX_AVAILABLE:
-        return extract_text_docx(io.BytesIO(data))
+    if name.endswith(".pdf"): return extract_text_pdf(io.BytesIO(data))
+    if name.endswith(".docx") and DOCX_AVAILABLE: return extract_text_docx(io.BytesIO(data))
     for enc in ("utf-8", "cp949", "euc-kr"):
-        try:
-            return data.decode(enc)
-        except Exception:
-            continue
+        try: return data.decode(enc)
+        except Exception: continue
     return data.decode("utf-8", errors="ignore")
 
 # ---------------- Clause splitter ----------------
 def split_into_clauses_kokr(text: str) -> List[Clause]:
-    """
-    한국 계약서를 '제 n 조' 단위로 분할.
-    본문 내 '제n조' 참조는 무시하고, 줄 시작(^)에서만 매칭.
-    """
     header_pat = re.compile(r"(?m)^(제\s*\d+\s*조[^\n]*)")
-
     headers = [(m.start(), m.group(0).strip()) for m in header_pat.finditer(text)]
-    if not headers:
-        return [Clause(1, "전체", text.strip(), 0, len(text))]
-
+    if not headers: return [Clause(1, "전체 계약서", text.strip(), 0, len(text))]
     headers.append((len(text), "__END__"))
-
     clauses: List[Clause] = []
     for i in range(len(headers) - 1):
         start, title = headers[i]
         end = headers[i + 1][0]
         body = text[start:end].strip()
+        if not body: continue
         clauses.append(Clause(i + 1, title, body, start, end))
-
     return clauses
 
-
 # ---------------- Google Sheet loader ----------------
-def _normalize(s: str) -> str:
-    return unicodedata.normalize("NFC", (s or "").strip()).lower()
+def _normalize(s: str) -> str: return unicodedata.normalize("NFC", (s or "").strip()).lower()
 
 def _open_worksheet_robust(sh, target_name: Optional[str]):
-    if not target_name:
-        return sh.sheet1
-    try:
-        return sh.worksheet(target_name)
-    except Exception:
-        pass
+    if not target_name: return sh.sheet1
+    try: return sh.worksheet(target_name)
+    except Exception: pass
     for ws in sh.worksheets():
-        if _normalize(ws.title) == _normalize(target_name):
-            return ws
+        if _normalize(ws.title) == _normalize(target_name): return ws
     return sh.sheet1
 
 def _read_secrets_gcp_sa() -> Optional[Dict[str, Any]]:
     import json as _json
-    if "gcp_sa" in st.secrets:
-        return dict(st.secrets["gcp_sa"])
+    if "gcp_sa" in st.secrets: return dict(st.secrets["gcp_sa"])
     raw = st.secrets.get("GDRIVE_SERVICE_ACCOUNT_JSON", "").strip()
     if raw:
         cfg = _json.loads(raw)
-        if "\\n" in cfg.get("private_key","") and "\n" not in cfg["private_key"]:
-            cfg["private_key"] = cfg["private_key"].replace("\\n","\n")
+        if "\\n" in cfg.get("private_key",""): cfg["private_key"] = cfg["private_key"].replace("\\n","\n")
         return cfg
     return None
 
 def load_issues_from_gsheet_private() -> List[Dict[str, Any]]:
-    if not GSHEETS_AVAILABLE:
-        raise RuntimeError("gspread / google-auth 패키지가 필요합니다.")
+    if not GSHEETS_AVAILABLE: raise RuntimeError("gspread / google-auth 패키지가 필요합니다.")
     cfg = _read_secrets_gcp_sa()
-    if not cfg:
-        st.error("Streamlit Secrets에 GCP 서비스 계정 정보(gcp_sa 또는 GDRIVE_SERVICE_ACCOUNT_JSON)가 설정되지 않았습니다.")
-        return []
-
+    if not cfg: st.error("Streamlit Secrets에 GCP 서비스 계정 정보가 설정되지 않았습니다."); return []
     sheet_id = st.secrets.get("GSHEET_ID", "").strip()
     ws_name  = (st.secrets.get("GSHEET_WORKSHEET", "독소조항_예시")).strip()
-
-    if not sheet_id:
-        st.error("Streamlit Secrets에 Google Sheet ID (GSHEET_ID)가 설정되지 않았습니다.")
-        return []
-        
+    if not sheet_id: st.error("Streamlit Secrets에 Google Sheet ID가 설정되지 않았습니다."); return []
     scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly", "https://www.googleapis.com/auth/drive.readonly"]
     creds = Credentials.from_service_account_info(cfg, scopes=scopes)
     gc = gspread.authorize(creds)
-
     sh = gc.open_by_key(sheet_id)
     ws = _open_worksheet_robust(sh, ws_name)
     rows = ws.get_all_values()
-
     issues = []
     if not rows: return issues
     header = [c.strip().lower() for c in rows[0]]
     start_idx = 1 if set(["id","title","definition"]).intersection(header) else 0
-
     for r in rows[start_idx:]:
         if len(r) < 3: continue
         a,b,c = r[0].strip(), r[1].strip(), r[2].strip()
@@ -162,69 +130,85 @@ def load_issues_from_gsheet_private() -> List[Dict[str, Any]]:
 # ---------------- LLM ----------------
 class OpenAILLM:
     def __init__(self, api_key: Optional[str]=None):
-        if not OPENAI_AVAILABLE:
-            raise RuntimeError("openai 패키지가 없습니다.")
+        if not OPENAI_AVAILABLE: raise RuntimeError("openai 패키지가 없습니다.")
         self.api_key = api_key or st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-        if not self.api_key:
-            st.error("OpenAI API 키가 필요합니다. 사이드바에서 입력해주세요.")
-            st.stop()
+        if not self.api_key: st.error("OpenAI API 키가 필요합니다. 사이드바에서 입력해주세요."); st.stop()
         self.client = OpenAI(api_key=self.api_key)
 
-    def review(self, *, model:str, issue_id:str, issue_title:str, issue_definition:str, full_text:str) -> Dict[str, Any]:
+    def review(self, *, model:str, issue_id:str, issue_title:str, issue_definition:str, full_text:str, clauses: List[Clause]) -> Dict[str, Any]:
         payload_text = full_text[:MAX_CHARS]
         
-        # --- ✨ [수정된 부분] 시스템 프롬프트 수정 ---
+        # 각 조항의 번호와 제목을 리스트로 만들어 프롬프트에 전달
+        clause_map_str = "\n".join([f"- 조항 {c.idx}: \"{c.title}\"" for c in clauses])
+
+        # --- ✨ [수정된 부분] 시스템 프롬프트 대폭 수정 ---
         system = (
-            "You are a helpful legal assistant who explains contract risks to non-lawyers in a simple and intuitive way. "
-            "Your user is Korean, so please write all explanations in KOREAN. "
-            "Detect ONLY the given risk as defined. "
-            "Use emojis to make the explanation more engaging. "
-            "Return a STRICT JSON object with the following schema:\n"
-            "{\n"
-            f"  \"issue_id\": \"{issue_id}\",\n"
-            f"  \"issue_title\": \"{issue_title}\",\n"
-            "  \"found\": boolean,\n"
-            "  \"explanation\": \"(Provide a clear, concise, and intuitive explanation in Korean. Start with an emoji like ⚠️ or 🤔.)\",\n"
-            "  \"clause_indices\": number[],\n"
-            "  \"evidence_quotes\": string[]\n"
-            "}\n"
-            "- 'explanation': 왜 이 조항이 잠재적으로 문제가 될 수 있는지 쉽게 설명해주세요.\n"
-            "- 'clause_indices': 이슈가 발견된 조항의 번호 (예: 제3조 -> 3).\n"
-            "- 'evidence_quotes': 이슈를 발견한 근거가 되는 계약서의 정확한 문장."
+            "You are a meticulous Korean legal assistant. Your primary goal is to find specific, problematic phrases in a contract based on a given definition of a toxic clause. "
+            "You must respond in KOREAN. Return a STRICT JSON object.\n\n"
+            "**CRITICAL INSTRUCTIONS:**\n"
+            "1.  **Analyze the Contract:** Review the entire `CONTRACT` text provided by the user.\n"
+            "2.  **Identify Clause Numbers:** Use the `CLAUSE_LIST` to determine the correct clause number (e.g., 제14조 is clause 14).\n"
+            "3.  **Find Specific Evidence:** If you find a toxic clause, you MUST pinpoint the **exact problematic sentence or phrase** from the contract. This is for highlighting.\n"
+            "4.  **Explain the Risk:** Clearly explain WHY that specific phrase is a problem, linking it to the `ISSUE_DEFINITION`.\n"
+            "5.  **JSON OUTPUT:** Your output MUST be a single JSON object with this exact schema:\n"
+            "    {\n"
+            f"      \"issue_id\": \"{issue_id}\",\n"
+            f"      \"issue_title\": \"{issue_title}\",\n"
+            "      \"found\": boolean, // `true` if found, otherwise `false`\n"
+            "      \"explanation\": \"(Provide a clear, concise, and intuitive explanation in Korean. Start with an emoji like ⚠️ or 🤔.)\",\n"
+            "      \"clause_indices\": number[], // **IMPORTANT**: If `found` is true, this array CANNOT be empty. It MUST contain the number(s) of the clause(s) where the issue was found.\n"
+            "      \"evidence_quotes\": string[] // **IMPORTANT**: If `found` is true, this array CANNOT be empty. It MUST contain the exact quote(s).\n"
+            "    }\n"
         )
         
         user = (
-            f"## 검토할 독소 조항 정의:\n{issue_definition}\n\n"
-            f"## 전체 계약서 내용:\n{payload_text}"
+            f"## ISSUE_DEFINITION (검토할 독소 조항 정의):\n{issue_definition}\n\n"
+            f"## CLAUSE_LIST (계약서의 조항 목록):\n{clause_map_str}\n\n"
+            f"## CONTRACT (전체 계약서 내용):\n{payload_text}"
         )
     
         try:
             resp = self.client.chat.completions.create(
-                model=model,
-                messages=[{"role":"system","content":system},{"role":"user","content":user}],
-                response_format={"type":"json_object"},
-                temperature=0.1, # 약간의 창의성을 허용하여 더 자연스러운 설명 생성
+                model=model, messages=[{"role":"system","content":system},{"role":"user","content":user}],
+                response_format={"type":"json_object"}, temperature=0.0,
             )
-            text = (resp.choices[0].message.content or "{}")
-            data = json.loads(text)
+            data = json.loads(resp.choices[0].message.content or "{}")
+            # --- ✨ [수정된 부분] 데이터 유효성 검사 ---
+            if data.get("found") and not data.get("clause_indices"):
+                st.warning(f"'{issue_title}' 이슈는 발견되었으나, 관련 조항 번호를 특정하지 못했습니다.")
+                data["clause_indices"] = [] # 빈 리스트로 초기화
         except Exception as e:
             st.warning(f"'{issue_title}' 검토 중 오류 발생: {e}")
             data = {"issue_id": issue_id, "found": False, "explanation": f"LLM 호출 오류: {e}", "clause_indices": [], "evidence_quotes": []}
         
-        data.setdefault("issue_id", issue_id)
-        data.setdefault("issue_title", issue_title)
+        data.setdefault("issue_id", issue_id); data.setdefault("issue_title", issue_title)
         return data
 
-
 # ---------------- Highlight helper ----------------
+def _normalize_for_matching(text: str) -> str:
+    return re.sub(r'[\s\n\r]+', '', text).lower()
+
 def highlight_text(text: str, quotes: List[str]) -> str:
-    safe = html.escape(text)
+    safe_text = html.escape(text)
+    temp_text = safe_text
+    
     for q in quotes:
         q = q.strip()
         if not q: continue
-        q_esc = re.escape(html.escape(q))
-        safe = re.sub(q_esc, f"<mark>{html.escape(q)}</mark>", safe, flags=re.IGNORECASE)
-    return safe
+        
+        escaped_q = html.escape(q)
+        # 띄어쓰기, 줄바꿈 등을 무시하고 일치하는 부분을 찾기 위한 정규식 패턴 생성
+        pattern = re.escape(escaped_q).replace(r'\ ', r'\s*').replace(r'\n', r'\s*')
+        
+        # 원본 텍스트에서 패턴에 일치하는 모든 부분 찾기
+        matches = list(re.finditer(pattern, temp_text, re.IGNORECASE | re.DOTALL))
+        
+        for match in reversed(matches): # 뒤에서부터 교체해야 인덱스가 꼬이지 않음
+            start, end = match.span()
+            original_phrase = temp_text[start:end]
+            temp_text = temp_text[:start] + f"<mark>{original_phrase}</mark>" + temp_text[end:]
+            
+    return temp_text
 
 # ---------------- UI ----------------
 st.set_page_config(page_title="계약서 이슈 마킹 뷰어", layout="wide")
@@ -233,89 +217,82 @@ st.title("📑 계약서 자동 이슈 마킹 & 하이라이트 뷰어")
 with st.sidebar:
     st.header("⚙️ 설정")
     model = st.text_input("모델 이름", value=DEFAULT_MODEL)
-    api_key_input = st.text_input("OpenAI API Key", type="password", help="여기에 키를 입력하면 환경변수나 Secrets 설정보다 우선 적용됩니다.")
-    api_key = api_key_input or st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-
+    api_key = st.text_input("OpenAI API Key", type="password", help="키를 입력하면 Secrets 설정보다 우선 적용됩니다.")
+    
 uploaded = st.file_uploader("계약서 업로드 (PDF/DOCX/TXT/MD)", type=["pdf","docx","txt","md"])
-if not uploaded:
-    st.info("분석할 계약서 파일을 업로드해주세요.")
-    st.stop()
+if not uploaded: st.info("분석할 계약서 파일을 업로드해주세요."); st.stop()
 
 raw_text = load_text_from_file(uploaded)
-if not raw_text.strip():
-    st.error("파일에서 텍스트를 추출하지 못했습니다.")
-    st.stop()
+if not raw_text.strip(): st.error("파일에서 텍스트를 추출하지 못했습니다."); st.stop()
 
 clauses = split_into_clauses_kokr(raw_text)
 
 if st.button("🔍 분석 시작하기", type="primary"):
-    try:
-        issues_cfg = load_issues_from_gsheet_private()
-    except Exception as e:
-        st.exception(e); st.stop()
+    with st.spinner('계약서를 분석 중입니다. 잠시만 기다려주세요...'):
+        try:
+            issues_cfg = load_issues_from_gsheet_private()
+        except Exception as e:
+            st.exception(e); st.stop()
+        if not issues_cfg:
+            st.error("Google Sheet에서 독소 조항 목록을 불러오지 못했습니다."); st.stop()
 
-    if not issues_cfg:
-        st.error("Google Sheet에서 독소 조항 목록을 불러오지 못했습니다. Secrets 설정을 확인해주세요."); st.stop()
-
-    llm = OpenAILLM(api_key=api_key)
-    progress_bar = st.progress(0, text="분석을 시작합니다...")
-    results = []
-    total_issues = len(issues_cfg)
-
-    for i, issue in enumerate(issues_cfg, 1):
-        progress_text = f"'{issue.get('title', '')}' 조항 검토 중... ({i}/{total_issues})"
-        progress_bar.progress(int(i / total_issues * 100), text=progress_text)
+        llm = OpenAILLM(api_key=api_key)
+        results = []
+        for issue in issues_cfg:
+            data = llm.review(
+                model=model, issue_id=issue.get("id", str(uuid.uuid4())),
+                issue_title=issue.get("title", "Untitled"),
+                issue_definition=issue.get("definition", ""), full_text=raw_text,
+                clauses=clauses # 조항 목록을 LLM에 전달
+            )
+            results.append(data)
         
-        data = llm.review(
-            model=model,
-            issue_id=issue.get("id", f"issue_{i}"),
-            issue_title=issue.get("title", "Untitled"),
-            issue_definition=issue.get("definition", ""),
-            full_text=raw_text
-        )
-        results.append(data)
-    
-    progress_bar.empty()
-    st.success("🎉 분석이 완료되었습니다!")
+        st.session_state['results'] = results
+        st.success("🎉 분석이 완료되었습니다!")
 
-    found_issues = [r for r in results if r.get("found")]
-    st.session_state['results'] = results # 분석 결과를 세션에 저장
-    st.session_state['found_issues'] = found_issues
 
-# --- ✨ [수정된 부분] 분석 결과 표시 UI ---
 if 'results' in st.session_state:
     results = st.session_state['results']
-    found_issues = st.session_state['found_issues']
-
+    found_issues = [r for r in results if r.get("found")]
+    
+    st.markdown("---")
     if not found_issues:
-        st.info("✅ 검토 결과, 계약서에서 특별한 독소 조항이 발견되지 않았습니다.")
+        st.success("✅ 검토 결과, 계약서에서 특별한 독소 조항이 발견되지 않았습니다.")
     else:
         st.error(f"🚨 총 {len(found_issues)}개의 잠재적 이슈가 발견되었습니다.")
+    
+    # --- ✨ [수정된 부분] 조항 미지정 이슈 상단에 표시 ---
+    unassigned_issues = [r for r in found_issues if not r.get("clause_indices")]
+    if unassigned_issues:
+        st.subheader("⚠️ 조항 미지정 이슈")
+        st.warning("아래 이슈들은 계약서에서 발견되었으나, 특정 조항과 연결되지 않았습니다.")
+        for issue in unassigned_issues:
+            with st.container(border=True):
+                with st.chat_message("assistant", avatar="🤔"):
+                    st.markdown(f"**{issue.get('issue_title')}**")
+                    st.markdown(issue.get('explanation', ''))
+                    quotes = issue.get("evidence_quotes", [])
+                    if quotes:
+                        st.markdown("**근거 문장:**")
+                        for q in quotes:
+                            st.markdown(f"> {q}")
+        st.markdown("---")
 
-    st.markdown("---")
+
     st.subheader("📄 계약서 조항별 검토 결과")
-
     for c in clauses:
-        matched_issues = [r for r in results if r.get("found") and c.idx in r.get("clause_indices", [])]
+        matched_issues = [r for r in found_issues if c.idx in r.get("clause_indices", [])]
+        
         all_quotes = [q for issue in matched_issues for q in issue.get("evidence_quotes", [])]
         highlighted_text = highlight_text(c.text, all_quotes)
         
-        # 계약서 조항 표시
         with st.container(border=True):
             st.markdown(f"### {html.escape(c.title)}")
             st.markdown(f"<div style='white-space: pre-wrap; line-height: 1.7;'>{highlighted_text}</div>", unsafe_allow_html=True)
             
-            # 발견된 이슈가 있으면 그 아래에 메모 형식으로 표시
             if matched_issues:
                 st.markdown("---")
                 for issue in matched_issues:
-                    st.warning(f"**{issue.get('issue_title')}**")
-                    st.markdown(issue.get('explanation', ''))
-
-    # --- 결과 다운로드 ---
-    st.download_button(
-        label="📥 JSON 결과 다운로드",
-        data=json.dumps(results, ensure_ascii=False, indent=2).encode('utf-8'),
-        file_name=f"review_{int(time.time())}.json",
-        mime="application/json"
-    )
+                    with st.chat_message("assistant", avatar="⚠️"):
+                        st.markdown(f"**{issue.get('issue_title')}**")
+                        st.markdown(issue.get('explanation', ''))
