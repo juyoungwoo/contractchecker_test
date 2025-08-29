@@ -70,12 +70,14 @@ def load_text_from_file(upload) -> str:
 # ---------------- Clause splitter (핵심 수정) ----------------
 def split_into_clauses_kokr(text: str) -> List[Clause]:
     """
-    '제 O조'를 기준으로 계약서를 정확하게 분할하는 새로운 로직.
-    finditer를 사용하여 각 조항의 시작점을 찾고, 그 사이의 텍스트를 추출하여 안정성을 높임.
+    '제 O조 (조항명)' 패턴을 기준으로 계약서를 분할합니다.
+    각 조의 제목(괄호 포함)을 명확하게 인식하고, 그 다음 조항 시작 전까지를 본문으로 묶습니다.
     """
-    # "제 <숫자> 조" 패턴으로 계약서 분할 기준점을 찾는다.
-    header_pat = re.compile(r"제\s*\d+\s*조")
-    matches = list(header_pat.finditer(text))
+    # "제 <숫자> 조 (<조항명>)" 패턴으로 계약서 조항의 시작점을 찾는다.
+    # 그룹 1: 조항 번호 (숫자)
+    # 그룹 2: 조항 제목 (괄호 안의 내용)
+    clause_pattern = re.compile(r"제\s*(\d+)\s*조\s*\(([^)]+)\)")
+    matches = list(clause_pattern.finditer(text))
 
     if not matches:
         return []
@@ -88,16 +90,17 @@ def split_into_clauses_kokr(text: str) -> List[Clause]:
         
         clause_full_text = text[start_pos:end_pos].strip()
         
-        # 조항 제목은 첫 줄로 설정
-        title = clause_full_text.split('\n', 1)[0].strip()
+        # 정규식 그룹에서 조항 번호와 제목을 직접 추출
+        clause_idx = int(match.group(1))
+        clause_title_text = match.group(2).strip()
         
-        # 조항 번호 추출
-        num_match = re.search(r'제\s*(\d+)\s*조', match.group(0))
-        if num_match:
-            clause_idx = int(num_match.group(1))
-            body_only = clause_full_text[len(title):].lstrip()
-            clauses.append(Clause(idx=clause_idx, title=title, text=body_only))
-
+        # UI에 표시될 전체 제목을 재구성
+        title = f"제{clause_idx}조 ({clause_title_text})"
+        
+        # 제목 부분(매치된 전체 문자열)을 제외한 나머지를 본문으로 설정
+        body_only = clause_full_text[len(match.group(0)):].strip()
+        
+        clauses.append(Clause(idx=clause_idx, title=title, text=body_only))
             
     return clauses
 
