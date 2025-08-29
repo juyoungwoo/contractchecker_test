@@ -7,7 +7,7 @@ Streamlit: 계약서 자동 이슈 마킹(독소조항) 리뷰어 — Google She
 from __future__ import annotations
 import os, io, re, json, time, uuid, html, unicodedata
 from dataclasses import dataclass
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 
 import streamlit as st
 from pypdf import PdfReader
@@ -79,7 +79,6 @@ def split_into_clauses_kokr(text: str) -> List[Clause]:
     )
     headers = [(m.start(), m.group(0).strip()) for m in header_pat.finditer(text)]
     if not headers:
-        # 헤더가 없으면 chunk 분할
         chunk = max(1000, len(text)//20)
         out, pos, idx = [], 0, 1
         while pos < len(text):
@@ -137,19 +136,9 @@ def load_issues_from_gsheet_private() -> List[Dict[str, Any]]:
         "https://www.googleapis.com/auth/drive.readonly",
     ]
     creds = Credentials.from_service_account_info(cfg, scopes=scopes)
-    gc = gspread.authorize(creds)  # ✅ authorize 사용
+    gc = gspread.authorize(creds)
 
-    try:
-        sh = gc.open_by_key(sheet_id)
-    except Exception as e:
-        import traceback
-        raise RuntimeError(
-            f"스프레드시트 열기 실패(open_by_key): {e}\n"
-            f"→ 공유/ID/API 확인\n"
-            f"client_email={cfg.get('client_email')}\n"
-            f"sheet_id={sheet_id}\n\n{traceback.format_exc()}"
-        )
-
+    sh = gc.open_by_key(sheet_id)
     ws = _open_worksheet_robust(sh, ws_name)
     rows = ws.get_all_values()
 
@@ -188,6 +177,18 @@ class OpenAILLM:
         data.setdefault("issue_id", issue_id)
         return data
 
+# ---------------- Highlight helper ----------------
+def highlight_text(text: str, quotes: List[str]) -> str:
+    """evidence_quotes에 나온 구절을 <mark> 태그로 감싸기"""
+    safe = html.escape(text)
+    for q in quotes:
+        q = q.strip()
+        if not q:
+            continue
+        q_esc = re.escape(html.escape(q))
+        safe = re.sub(q_esc, f"<mark>{html.escape(q)}</mark>", safe, flags=re.IGNORECASE)
+    return safe
+
 # ---------------- UI ----------------
 st.set_page_config(page_title="계약서 이슈 마킹 뷰어", layout="wide")
 st.title("📑 계약서 자동 이슈 마킹 & 하이라이트 뷰어")
@@ -222,25 +223,32 @@ for i,issue in enumerate(issues_cfg,1):
 progress.empty()
 
 found = [r for r in results if r.get("found")]
-left,right = st.columns([2,1])
 
-with right:
-    st.subheader("탐지 요약")
-    for r in found:
-        with st.expander(f"✅ {r.get('title', r['issue_id'])}"):
-            st.write(r.get("explanation",""))
-            st.write("Indices:", r.get("clause_indices",[]))
-            for q in r.get("evidence_quotes",[]): st.markdown(f"> {q}")
-    st.download_button("📥 JSON 다운로드",
-        data=json.dumps(results,ensure_ascii=False,indent=2).encode(),
-        file_name=f"review_{int(time.time())}.json", mime="application/json")
+st.subheader("📄 문서 보기 (본문 + 옆에 설명)")
 
-with left:
-    st.subheader("문서 보기")
-    hi = {idx for r in found for idx in r.get("clause_indices",[])}
-    def render(c:Clause, hl:bool):
-        bg="#fffbe6" if hl else "#f6f7f9"
-        return f"<div style='padding:8px;margin:8px 0;border-radius:8px;background:{bg}'><b>{html.escape(c.title)}</b><div style='white-space:pre-wrap'>{html.escape(c.text)}</div></div>"
-    st.markdown("\n".join(render(c,c.idx in hi) for c in clauses), unsafe_allow_html=True)
+for c in clauses:
+    matched = [r for r in results if c.idx in r.get("clause_indices", [])]
+    quotes_all = [q for issue in matched for q in issue.get("evidence_quotes", [])]
+    highlighted = highlight_text(c.text, quotes_all)
+
+    col1, col2 = st.columns([3,2], gap="small")
+    with col1:
+        st.markdown(
+            f"<div style='padding:8px;margin:8px 0;border-radius:8px;background:#f6f7f9;border:1px solid #e5e7eb'>"
+            f"<b>{html.escape(c.title)}</b><div style='white-space:pre-wrap'>{highlighted}</div></div>",
+            unsafe_allow_html=True
+        )
+    with col2:
+        if matched:
+            for issue in matched:
+                st.markdown(
+                    f"<div style='padding:6px;margin:6px 0;border-left:4px solid #ff4d4f;background:#fff1f0;border-radius:6px'>"
+                    f"<b>⚠️ {html.escape(issue.get('title', issue['issue_id']))}</b><br>{html.escape(issue.get('explanation',''))}"
+                    f"</div>", unsafe_allow_html=True
+                )
+
+st.download_button("📥 JSON 다운로드",
+    data=json.dumps(results,ensure_ascii=False,indent=2).encode(),
+    file_name=f"review_{int(time.time())}.json", mime="application/json")
 
 st.success("분석 완료")
