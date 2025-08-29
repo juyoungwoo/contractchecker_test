@@ -133,18 +133,20 @@ class OpenAILLM:
     def review(self, *, model:str, issue_id:str, issue_title:str, issue_definition:str, full_text:str, clauses: List[Clause]) -> Dict[str, Any]:
         payload_text = full_text[:MAX_CHARS]
         clause_map_str = "\n".join([f"- 조항 {c.idx}: \"{c.title}\"" for c in clauses])
+        
         system = (
-            "You are a meticulous Korean legal assistant. Your primary goal is to find specific, problematic phrases in a contract based on a given definition of a toxic clause. "
+            "You are a meticulous Korean legal assistant **acting on behalf of the '연구원' (the research institute)**. "
+            "Your primary goal is to find clauses in the contract that are **disadvantageous or potentially risky for the '연구원'**. "
             "You must respond in KOREAN. Return a STRICT JSON object.\n\n"
             "**CRITICAL INSTRUCTIONS:**\n"
-            "1.  **Analyze Contract:** Review the `CONTRACT` text.\n"
-            "2.  **Identify Clause Numbers:** Use the `CLAUSE_LIST` to find the correct clause number (e.g., 제14조 is clause 14).\n"
+            "1.  **Analyze from '연구원's' Perspective:** Review the `CONTRACT` and identify clauses that are unfavorable to the '연구원'.\n"
+            "2.  **Identify Clause Numbers:** Use the `CLAUSE_LIST` to determine the correct clause number (e.g., 제14조 is clause 14).\n"
             "3.  **Find Specific Evidence:** If you find a toxic clause, you MUST pinpoint the **exact problematic sentence or phrase**.\n"
-            "4.  **Explain the Risk:** Clearly explain WHY that specific phrase is a problem.\n"
+            "4.  **Explain the Risk (for '연구원'):** Clearly explain WHY that specific phrase is a problem **from the '연구원's' point of view**.\n"
             "5.  **JSON OUTPUT:** Your output MUST be a single JSON object with this exact schema:\n"
             "    {\n"
             f"      \"issue_id\": \"{issue_id}\", \"issue_title\": \"{issue_title}\", \"found\": boolean,\n"
-            "      \"explanation\": \"(Provide a clear, concise, and intuitive explanation in Korean. Start with an emoji.)\",\n"
+            "      \"explanation\": \"(Provide a clear, concise, and intuitive explanation in Korean **from the '연구원's' perspective**. Start with an emoji.)\",\n"
             "      \"clause_indices\": number[], /* IMPORTANT: If `found` is true, this array MUST contain the clause number(s) and CANNOT be empty. */\n"
             "      \"evidence_quotes\": string[] /* IMPORTANT: If `found` is true, this array MUST contain the exact quote(s) and CANNOT be empty. */\n"
             "    }\n"
@@ -172,16 +174,15 @@ def highlight_text(text: str, quotes: List[str]) -> str:
         if not q: continue
         try:
             escaped_q = html.escape(q)
-            # 공백/줄바꿈에 유연하게 대처하기 위한 정규식
             pattern = r'\s*'.join(map(re.escape, list(q)))
-            safe_text = re.sub(f'({pattern})', r'<mark>\1</mark>', safe_text, flags=re.IGNORECASE | re.UNICODE)
+            safe_text = re.sub(f'({pattern})', r'<mark>\\1</mark>', safe_text, flags=re.IGNORECASE | re.UNICODE)
         except re.error:
             safe_text = safe_text.replace(html.escape(q), f"<mark>{html.escape(q)}</mark>")
     return safe_text
 
 # ---------------- UI ----------------
 st.set_page_config(page_title="계약서 독소 조항 분석기", layout="wide")
-st.title("📑 계약서 독소 조항 분석기")
+st.title("📑 계약서 독소 조항 분석기 (연구원 Ver.)")
 
 with st.sidebar:
     st.header("⚙️ 설정")
@@ -199,8 +200,7 @@ clauses = split_into_clauses_kokr(raw_text)
 if st.button("🔍 분석 시작하기", type="primary"):
     with st.spinner('AI가 계약서를 분석 중입니다. 잠시만 기다려주세요...'):
         if not clauses:
-            st.error("계약서에서 '제 O조' 형식의 조항을 찾을 수 없어 분석을 진행할 수 없습니다.")
-            st.stop()
+            st.error("계약서에서 '제 O조' 형식의 조항을 찾을 수 없어 분석을 진행할 수 없습니다."); st.stop()
         
         issues_cfg = load_issues_from_gsheet_private()
         if not issues_cfg:
@@ -223,45 +223,36 @@ if 'results' in st.session_state:
     
     st.markdown("---")
     if not found_issues:
-        st.success("✅ 검토 결과, 계약서에서 특별한 독소 조항이 발견되지 않았습니다.")
+        st.success("✅ 검토 결과, '연구원'에게 특별히 불리한 독소 조항이 발견되지 않았습니다.")
     else:
         st.error(f"🚨 총 {len(found_issues)}개의 잠재적 이슈가 발견되었습니다.")
     
-    # --- ✨ [수정된 부분] 오류 코드 수정 ---
-    assigned_clause_indices = {c.idx for c in clauses}
-    unassigned_issues = [
-        r for r in found_issues 
-        if not any(idx in assigned_clause_indices for idx in r.get("clause_indices", []))
-    ]
-
-    if unassigned_issues:
-        st.subheader("⚠️ 조항 미지정 이슈")
-        st.warning("아래 이슈들은 계약서에서 발견되었으나, 특정 조항과 연결되지 않았습니다.")
-        for issue in unassigned_issues:
-            with st.container(border=True):
-                 with st.chat_message("assistant", avatar="🤔"):
-                    st.markdown(f"**{issue.get('issue_title')}**")
-                    st.markdown(issue.get('explanation', ''))
-                    quotes = issue.get("evidence_quotes", [])
-                    if quotes:
-                        st.markdown("**근거 문장:**")
-                        for q in quotes: st.markdown(f"> {q}")
-        st.markdown("---")
-
+    # --- ✨ [수정된 부분] 문제 있는 조항만 표시하도록 로직 변경 ---
     st.subheader("📄 계약서 조항별 검토 결과")
-    for c in clauses:
-        matched_issues = [r for r in found_issues if c.idx in r.get("clause_indices", [])]
-        
-        all_quotes = [q for issue in matched_issues for q in issue.get("evidence_quotes", [])]
-        highlighted_text = highlight_text(c.text, all_quotes)
-        
-        with st.container(border=True):
-            st.markdown(f"### {html.escape(c.title)}")
-            st.markdown(f"<div style='white-space: pre-wrap; line-height: 1.7;'>{highlighted_text}</div>", unsafe_allow_html=True)
+    
+    # 문제가 발견된 조항들의 인덱스만 추출
+    issue_clause_indices = {idx for issue in found_issues for idx in issue.get("clause_indices", [])}
+    
+    # 문제가 발견된 조항들만 필터링
+    clauses_with_issues = [c for c in clauses if c.idx in issue_clause_indices]
+
+    if not clauses_with_issues:
+        st.info("발견된 이슈와 매칭되는 조항이 없습니다. AI가 조항 번호를 제대로 인식하지 못했을 수 있습니다.")
+    else:
+        for c in clauses_with_issues:
+            # 현재 조항에 해당하는 이슈들만 필터링
+            matched_issues = [r for r in found_issues if c.idx in r.get("clause_indices", [])]
             
-            if matched_issues:
-                st.markdown("---")
-                for issue in matched_issues:
-                    with st.chat_message("assistant", avatar="⚠️"):
-                        st.markdown(f"**{issue.get('issue_title')}**")
-                        st.markdown(issue.get('explanation', ''))
+            all_quotes = [q for issue in matched_issues for q in issue.get("evidence_quotes", [])]
+            highlighted_text = highlight_text(c.text, all_quotes)
+            
+            with st.container(border=True):
+                st.markdown(f"### {html.escape(c.title)}")
+                st.markdown(f"<div style='white-space: pre-wrap; line-height: 1.7;'>{highlighted_text}</div>", unsafe_allow_html=True)
+                
+                if matched_issues:
+                    st.markdown("---")
+                    for issue in matched_issues:
+                        with st.chat_message("assistant", avatar="⚠️"):
+                            st.markdown(f"**{issue.get('issue_title')}**")
+                            st.markdown(issue.get('explanation', ''))
