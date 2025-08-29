@@ -152,12 +152,12 @@ class OpenAILLM:
         clause_map_str = "\n".join([f"- 조항 {c.idx}: \"{c.title}\"" for c in clauses])
         
         system = (
-            "You are a meticulous Korean legal assistant **acting on behalf of the '연구원' (the research institute)**. "
+            "You are a meticulous Korean legal assistant **acting on behalf of the '한국전자기술연구원' (the research institute)**. "
             "Your primary goal is to find clauses in the contract that are **disadvantageous or potentially risky for the '연구원'**. "
             "You must respond in KOREAN. Return a STRICT JSON object.\n\n"
             "**CRITICAL INSTRUCTIONS:**\n"
             "1.  **Analyze from '연구원's' Perspective:** Review the `CONTRACT` and identify clauses that are unfavorable to the '연구원'.\n"
-            "2.  **Identify Clause Numbers:** Use the `CLAUSE_LIST` to determine the correct clause number (e.g., 제14조 is clause 14).\n"
+            "2.  **Identify Clause Numbers:** Use the `CLAUSE_LIST` to determine the correct clause number (e.g., 제14조 3항 is clause 14).\n"
             "3.  **Find Specific Evidence:** If you find a toxic clause, you MUST pinpoint the **exact problematic sentence or phrase**.\n"
             "4.  **Explain the Risk (for '연구원'):** Clearly explain WHY that specific phrase is a problem **from the '연구원's' point of view**.\n"
             "5.  **Quote Original Phrases:** Extract **the original Korean phrase(s)** as-is for the quotes. Do NOT paraphrase.\n"
@@ -209,10 +209,10 @@ def highlight_text(text: str, quotes: List[str]) -> str:
 
 # ---------------- UI ----------------
 st.set_page_config(page_title="계약서 독소 조항 분석기", layout="wide")
-st.title("📑 계약서 독소 조항 분석기 (연구원 Ver.)")
+st.title("📑 계약서 독소 조항 분석기")
 
 with st.sidebar:
-    st.header("⚙️ 설정")
+    st.header("⚙️ 설정(필요시)")
     model = st.text_input("OpenAI 모델", value=DEFAULT_MODEL)
     api_key = st.text_input("OpenAI API Key", type="password", help="키를 입력하면 Secrets 설정보다 우선 적용됩니다.")
     
@@ -252,7 +252,13 @@ if 'results' in st.session_state:
     if not found_issues:
         st.success("✅ 검토 결과, '연구원'에게 특별히 불리한 독소 조항이 발견되지 않았습니다.")
     else:
-        st.error(f"🚨 총 {len(found_issues)}개의 잠재적 이슈가 발견되었습니다.")
+        # --- 여기부터 수정 ---
+        # 각 이슈별로 발견된 증거(quotes)의 개수를 모두 합산합니다.
+        total_occurrences = sum(len(r.get("evidence_quotes", [])) for r in found_issues)
+        
+        # 합산된 총 '건수'를 표시합니다.
+        st.error(f"🚨 총 {total_occurrences}건의 이슈가 발견되었습니다.")
+        # --- 여기까지 수정 ---
     
     st.subheader("📄 검토가 필요한 조항")
     
@@ -284,6 +290,7 @@ if 'results' in st.session_state:
                     항별_이슈_그룹 = defaultdict(list)
                     
                     for issue in matched_issues:
+                        # 여러 증거가 있을 수 있으므로 첫 번째 증거를 기준으로 항을 찾습니다.
                         quote = issue["evidence_quotes"][0] if issue.get("evidence_quotes") else ""
                         항_match = re.search(r'제?\s*([가-하])\s*항|([가-하])\.', quote)
                         항_label = 항_match.group(1) or 항_match.group(2) if 항_match else None
