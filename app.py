@@ -74,24 +74,29 @@ def load_text_from_file(upload) -> str:
 
 # ---------------- Clause splitter ----------------
 def split_into_clauses_kokr(text: str) -> List[Clause]:
-    header_pat = re.compile(
-        r"(?im)^(\s*(제\s*\d+\s*조[^\n]*?)\s*$|\s*((?:section|article)\s*\d+[^\n]*?)\s*$|\s*(\d+(?:\.\d+)*\.?\s+[^\n]{0,80})\s*$)"
-    )
+    """
+    한국 계약서를 '제 n 조' 단위로 분할.
+    본문 내 '제n조' 참조는 무시하고, 줄 시작(^)에서만 매칭.
+    """
+    # 줄 시작에서만 '제 n 조' 잡기 (예: 제 1 조, 제1조, 제12조)
+    header_pat = re.compile(r"(?m)^(제\s*\d+\s*조[^\n]*)")
+
     headers = [(m.start(), m.group(0).strip()) for m in header_pat.finditer(text)]
     if not headers:
-        chunk = max(1000, len(text)//20)
-        out, pos, idx = [], 0, 1
-        while pos < len(text):
-            end = min(len(text), pos+chunk)
-            out.append(Clause(idx, f"Clause {idx}", text[pos:end], pos, end))
-            pos, idx = end, idx+1
-        return out
+        # fallback: 통째로 반환
+        return [Clause(1, "전체", text.strip(), 0, len(text))]
+
     headers.append((len(text), "__END__"))
-    out = []
-    for i in range(len(headers)-1):
-        start, end = headers[i][0], headers[i+1][0]
-        out.append(Clause(i+1, headers[i][1], text[start:end].strip(), start, end))
-    return out
+
+    clauses: List[Clause] = []
+    for i in range(len(headers) - 1):
+        start, title = headers[i]
+        end = headers[i + 1][0]
+        body = text[start:end].strip()
+        clauses.append(Clause(i + 1, title, body, start, end))
+
+    return clauses
+
 
 # ---------------- Google Sheet loader ----------------
 def _normalize(s: str) -> str:
@@ -163,8 +168,25 @@ class OpenAILLM:
 
     def review(self, *, model:str, issue_id:str, issue_definition:str, full_text:str) -> Dict[str, Any]:
         payload_text = full_text[:MAX_CHARS]
-        system = "You are a meticulous contract reviewer. Detect ONLY the given risk. Return STRICT JSON."
-        user = f"ISSUE_DEFINITION: {issue_definition}\n\nCONTRACT:\n{payload_text}"
+        system = (
+            "You are a meticulous contract reviewer. "
+            "Detect ONLY the given risk as defined. "
+            "Return STRICT JSON with exactly this schema:\n"
+            "{\n"
+            "  \"issue_id\": string,\n"
+            "  \"found\": boolean,\n"
+            "  \"explanation\": string,\n"
+            "  \"clause_indices\": number[],\n"
+            "  \"evidence_quotes\": string[]\n"
+            "}\n"
+            "- 'clause_indices' = which clause numbers (approx) contain the issue.\n"
+            "- 'evidence_quotes' = exact text snippets from the contract that triggered detection."
+        )
+        user = (
+            f"ISSUE_DEFINITION:\n{issue_definition}\n\n"
+            f"CONTRACT:\n{payload_text}"
+        )
+    
         resp = self.client.chat.completions.create(
             model=model,
             messages=[{"role":"system","content":system},{"role":"user","content":user}],
@@ -172,10 +194,19 @@ class OpenAILLM:
             temperature=0,
         )
         text = (resp.choices[0].message.content or "{}")
-        try: data = json.loads(text)
-        except: data = {"issue_id":issue_id,"found":False,"explanation":"Invalid JSON","clause_indices":[],"evidence_quotes":[]}
+        try:
+            data = json.loads(text)
+        except:
+            data = {
+                "issue_id": issue_id,
+                "found": False,
+                "explanation": "Invalid JSON from model",
+                "clause_indices": [],
+                "evidence_quotes": [],
+            }
         data.setdefault("issue_id", issue_id)
         return data
+
 
 # ---------------- Highlight helper ----------------
 def highlight_text(text: str, quotes: List[str]) -> str:
