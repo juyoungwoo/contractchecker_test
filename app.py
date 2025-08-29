@@ -3,28 +3,27 @@
 """
 Streamlit: 계약서 자동 이슈 마킹(독소조항) 리뷰어 — Google Sheet(비공개, Secrets) 기반
 
-특징
-- 독소조항 정의는 전부 **비공개 Google Sheet**에서 읽음 (링크/ID UI 노출 없음)
-- 시트의 **A=id, B=title, C=definition** 컬럼을 사용
-- 계약서 업로드(PDF/DOCX/TXT/MD) → LLM이 각 이슈별로 탐지 → 좌측 하이라이트/우측 요약
-
 실행 준비
-  1) requirements.txt (필수 패키지)
-     streamlit\nopenai\npypdf\npython-docx\ngspread\ngoogle-auth\n
-  2) Streamlit Secrets 설정
+  1) requirements.txt (권장 고정)
+     streamlit==1.36.0
+     openai>=1.40.0
+     pypdf>=4.2.0
+     python-docx>=1.0.1
+     gspread>=6.1.2
+     google-auth>=2.31.0
+
+  2) Streamlit Secrets
      [필수]
-       - OPENAI_API_KEY: OpenAI API 키
-       - GDRIVE_SERVICE_ACCOUNT_JSON: 서비스계정 JSON 원문 전체 (문자열)
-       - GSHEET_ID: 스프레드시트 ID (/d/<이 값>/)
+       - OPENAI_API_KEY
+       - (권장) [gcp_sa] 서비스계정 JSON 테이블  또는  GDRIVE_SERVICE_ACCOUNT_JSON (원문 문자열)
+       - GSHEET_ID
      [선택]
-       - GSHEET_WORKSHEET: 워크시트 이름 (미입력 시 첫 번째 시트)
+       - GSHEET_WORKSHEET
 
-  3) Google Sheet 공유 설정
-     - 해당 시트를 서비스계정 이메일에 "보기 권한"으로 공유
-
-실행
-  $ streamlit run app.py
+  3) 시트 공유
+     - 서비스계정 이메일에 “보기 권한” 공유
 """
+
 from __future__ import annotations
 import os
 import io
@@ -33,6 +32,7 @@ import json
 import time
 import uuid
 import html
+import unicodedata
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -49,6 +49,7 @@ except Exception:
 # gspread for Google Sheets
 try:
     import gspread  # type: ignore
+    from google.oauth2.service_account import Credentials  # type: ignore
     GSHEETS_AVAILABLE = True
 except Exception:
     GSHEETS_AVAILABLE = False
@@ -62,7 +63,7 @@ except Exception:
 
 # --------------- Constants ---------------
 MAX_CHARS = 200_000            # LLM 안전 절단
-DEFAULT_MODEL = "gpt-4o-mini"   # 기본 모델명 (사이드바에서 수정 가능)
+DEFAULT_MODEL = "gpt-4o-mini"  # 사이드바에서 변경 가능
 
 # --------------- Data types ---------------
 @dataclass
@@ -84,13 +85,11 @@ def extract_text_pdf(bio: io.BytesIO) -> str:
             parts.append("")
     return "\n\n".join(parts)
 
-
 def extract_text_docx(bio: io.BytesIO) -> str:
     if not DOCX_AVAILABLE:
         return ""
     doc = DocxDocument(bio)
     return "\n".join(p.text for p in doc.paragraphs)
-
 
 def load_text_from_file(upload) -> str:
     name = upload.name.lower()
@@ -99,11 +98,13 @@ def load_text_from_file(upload) -> str:
         return extract_text_pdf(io.BytesIO(data))
     if name.endswith(".docx") and DOCX_AVAILABLE:
         return extract_text_docx(io.BytesIO(data))
-    try:
-        return data.decode("utf-8")
-    except Exception:
-        return data.decode("cp949", errors="ignore")  # Python 3.10에서는 이게 잘 작동함
-
+    # 텍스트 파일류
+    for enc in ("utf-8", "cp949", "euc-kr"):
+        try:
+            return data.decode(enc)
+        except Exception:
+            continue
+    return data.decode("utf-8", errors="ignore")
 
 # --------------- Clause splitter ---------------
 def split_into_clauses_kokr(text: str) -> List[Clause]:
@@ -137,40 +138,98 @@ def split_into_clauses_kokr(text: str) -> List[Clause]:
         out.append(Clause(i+1, title, body, start, end))
     return out
 
+# --------------- Google Sheet loader ---------------
+def _normalize(s: str) -> str:
+    s = (s or "").strip()
+    s = unicodedata.normalize("NFC", s)
+    s = " ".join(s.split())
+    return s.lower()
 
-# --------------- Google Sheet loader ---------------
-# --------------- Google Sheet loader ---------------
+def _open_worksheet_robust(sh, target_name: Optional[str]):
+    if not target_name:
+        return sh.sheet1
+    # 1) 정확히
+    try:
+        return sh.worksheet(target_name)
+    except Exception:
+        pass
+    # 2) 정규화 일치
+    ws_list = sh.worksheets()
+    norm_target = _normalize(target_name)
+    for ws in ws_list:
+        if _normalize(ws.title) == norm_target:
+            return ws
+    # 3) 부분 일치
+    for ws in ws_list:
+        if norm_target in _normalize(ws.title):
+            return ws
+    # 4) fallback
+    return sh.sheet1
+
+def _read_secrets_gcp_sa() -> Optional[Dict[str, Any]]:
+    import json as _json
+    if "gcp_sa" in st.secrets:
+        return dict(st.secrets["gcp_sa"])
+    sa_json_str = st.secrets.get("GDRIVE_SERVICE_ACCOUNT_JSON", "").strip()
+    if sa_json_str:
+        try:
+            cfg = _json.loads(sa_json_str)
+        except Exception:
+            cfg = None
+        else:
+            # 문자열 방식 private_key의 \n 보정
+            if isinstance(cfg.get("private_key"), str):
+                pk = cfg["private_key"]
+                if "\\n" in pk and "\n" not in pk:
+                    cfg["private_key"] = pk.replace("\\n", "\n")
+            return cfg
+    return None
+
 def load_issues_from_gsheet_private() -> List[Dict[str, Any]]:
     if not GSHEETS_AVAILABLE:
-        raise RuntimeError("gspread 패키지가 필요합니다. requirements.txt를 확인하세요.")
+        raise RuntimeError("gspread / google-auth 패키지가 필요합니다. requirements.txt를 확인하세요.")
 
-    # ✅ Secrets 읽기 (테이블 우선, 문자열 fallback)
-    import json as _json
-    cfg = None
-    if "gcp_sa" in st.secrets:
-        cfg = dict(st.secrets["gcp_sa"])  # TOML 테이블로 넣은 경우
-    sa_json_str = st.secrets.get("GDRIVE_SERVICE_ACCOUNT_JSON", "").strip()
-    if not cfg and sa_json_str:
-        cfg = _json.loads(sa_json_str)  # 예전 JSON 문자열 방식
-
-    # ✅ private_key 줄바꿈 보정 (JSON 문자열 방식일 때 \n → 실제 개행)
-    if cfg and isinstance(cfg.get("private_key"), str):
-        pk = cfg["private_key"]
-        if "\\n" in pk and "\n" not in pk:
-            cfg["private_key"] = pk.replace("\\n", "\n")
+    cfg = _read_secrets_gcp_sa()
+    if not cfg:
+        raise RuntimeError("서비스계정 설정이 없습니다. Secrets의 [gcp_sa] 또는 GDRIVE_SERVICE_ACCOUNT_JSON 확인")
 
     sheet_id = st.secrets.get("GSHEET_ID", "").strip()
-    sheet_ws = st.secrets.get("GSHEET_WORKSHEET", "").strip() or None
+    ws_name  = (st.secrets.get("GSHEET_WORKSHEET", "") or "").strip()
+    if not sheet_id:
+        raise RuntimeError("GSHEET_ID가 비어 있습니다.")
 
-    if not cfg or not sheet_id:
-        raise RuntimeError("서비스계정/시트 설정이 없습니다. Secrets의 [gcp_sa] 또는 GDRIVE_SERVICE_ACCOUNT_JSON, 그리고 GSHEET_ID를 확인하세요.")
+    # 명시 스코프로 인증 (read-only)
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets.readonly",
+        "https://www.googleapis.com/auth/drive.readonly",
+    ]
+    try:
+        creds = Credentials.from_service_account_info(cfg, scopes=scopes)
+    except Exception as e:
+        raise RuntimeError(f"서비스계정 크레덴셜 생성 실패: {e}")
 
-    # ✅ 서비스계정으로 접속
-    gc = gspread.service_account_from_dict(cfg)
-    sh = gc.open_by_key(sheet_id)
-    ws = sh.worksheet(sheet_ws) if sheet_ws else sh.sheet1
+    try:
+        gc = gspread.Client(auth=creds)
+    except Exception as e:
+        raise RuntimeError(f"gspread 클라이언트 생성 실패: {e}")
 
-    rows = ws.get_all_values()  # 2D list
+    # 스프레드시트 & 워크시트 열기
+    try:
+        sh = gc.open_by_key(sheet_id)
+    except Exception as e:
+        raise RuntimeError(f"스프레드시트 열기 실패(open_by_key): {e}\n→ 공유/ID/API 활성화 확인")
+
+    try:
+        ws = _open_worksheet_robust(sh, ws_name)
+    except Exception as e:
+        raise RuntimeError(f"워크시트 열기 실패: {e}")
+
+    # 데이터 로딩
+    try:
+        rows = ws.get_all_values()  # 2D list
+    except Exception as e:
+        raise RuntimeError(f"시트 데이터 로딩 실패(get_all_values): {e}")
+
     issues: List[Dict[str, Any]] = []
     if not rows:
         return issues
@@ -193,8 +252,6 @@ def load_issues_from_gsheet_private() -> List[Dict[str, Any]]:
         })
     return issues
 
-
-
 # --------------- LLM provider ---------------
 class OpenAILLM:
     def __init__(self, api_key: Optional[str] = None):
@@ -205,8 +262,8 @@ class OpenAILLM:
     def review(self, *, model: str, issue_id: str, issue_definition: str, full_text: str) -> Dict[str, Any]:
         payload_text = full_text[:MAX_CHARS]
         system = (
-            "You are a meticulous contract reviewer. Your SOLE task is to detect ONE specific risk as defined."
-            " Return STRICT JSON only."
+            "You are a meticulous contract reviewer. Your SOLE task is to detect ONE specific risk as defined. "
+            "Return STRICT JSON only."
         )
         user = (
             "ISSUE_DEFINITION: " + issue_definition +
@@ -218,22 +275,25 @@ class OpenAILLM:
             "- Output STRICT JSON with this schema and NOTHING else.\n\n"
             "{\n  \"issue_id\": string,\n  \"found\": boolean,\n  \"explanation\": string,\n  \"clause_indices\": number[],\n  \"evidence_quotes\": string[]\n}"
         )
-       # app.py의 OpenAILLM.review 메서드 (수정된 버전)
 
-        resp = self.client.chat.completions.create( # <--- 수정 (1)
+        # ✅ Chat Completions(JSON 강제)
+        resp = self.client.chat.completions.create(
             model=model,
-            messages=[ # <--- 수정 (2)
+            messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
             response_format={"type": "json_object"},
+            temperature=0,
         )
+
+        text = ""
         try:
-            text = resp.choices[0].message.content # <--- 수정 (3)
-            if not text:
-                text = "{}"
+            text = resp.choices[0].message.content or ""
         except Exception:
-            text = "{}"
+            text = ""
+
+        # JSON 파싱
         try:
             data = json.loads(text)
         except Exception:
@@ -251,6 +311,42 @@ class OpenAILLM:
         data.setdefault("evidence_quotes", [])
         return data
 
+# --------------- Debug helper (선택) ---------------
+def debug_gsheet_connect():
+    """문제 시 상단에서 호출해 원인 단계 즉시 확인."""
+    if not GSHEETS_AVAILABLE:
+        st.warning("gspread / google-auth 미설치")
+        return
+    try:
+        cfg = _read_secrets_gcp_sa()
+        sheet_id = st.secrets.get("GSHEET_ID", "").strip()
+        ws_name  = (st.secrets.get("GSHEET_WORKSHEET", "") or "").strip()
+        st.write("서비스계정:", (cfg or {}).get("client_email", "(없음)"))
+        st.write("GSHEET_ID:", sheet_id)
+
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets.readonly",
+            "https://www.googleapis.com/auth/drive.readonly",
+        ]
+        creds = Credentials.from_service_account_info(cfg, scopes=scopes)
+        gc = gspread.Client(auth=creds)
+        st.write("✅ 인증 성공")
+
+        sh = gc.open_by_key(sheet_id)
+        st.write("✅ 스프레드시트 열기:", getattr(sh, "title", "(제목 불러오기 실패)"))
+
+        names = [ws.title for ws in sh.worksheets()]
+        st.write("🗂 워크시트 목록:", names)
+
+        ws = _open_worksheet_robust(sh, ws_name)
+        st.write("✅ 워크시트 선택:", ws.title)
+
+        rows = ws.get_all_values()
+        st.write(f"✅ 데이터 로딩: {len(rows)}행")
+        st.write("👀 상위 5행:", rows[:5])
+    except Exception as e:
+        st.exception(e)
+        st.error("❌ 위 Traceback 단계로 원인 판별 가능")
 
 # --------------- UI ---------------
 st.set_page_config(page_title="계약서 이슈 마킹 뷰어", layout="wide")
@@ -261,9 +357,15 @@ with st.sidebar:
     model = st.text_input("모델 이름", value=DEFAULT_MODEL)
     api_key = st.text_input("OpenAI API Key (선택: secrets 사용시 비워두기)", type="password", value=os.getenv("OPENAI_API_KEY", ""))
     st.caption("독소조항 정의: 비공개 Google Sheet(Secrets)에서 자동 로딩")
+    debug = st.checkbox("Google Sheet 연결 디버그 출력", value=False)
+
+if debug:
+    st.subheader("🧪 Google Sheet 연결 진단")
+    debug_gsheet_connect()
+    st.divider()
 
 # 계약서 업로드
-uploaded = st.file_uploader("계약서 파일 업로드 (PDF/DOCX/TXT/MD)", type=["pdf","docx","txt","md"]) 
+uploaded = st.file_uploader("계약서 파일 업로드 (PDF/DOCX/TXT/MD)", type=["pdf","docx","txt","md"])
 if uploaded is None:
     st.info("계약서를 업로드하세요.")
     st.stop()
@@ -279,6 +381,7 @@ clauses = split_into_clauses_kokr(raw_text)
 try:
     issues_cfg = load_issues_from_gsheet_private()
 except Exception as e:
+    st.exception(e)
     st.error(f"독소조항 시트 로딩 실패: {e}")
     st.stop()
 
@@ -295,13 +398,17 @@ st.divider()
 progress = st.progress(0)
 results: List[Dict[str, Any]] = []
 for i, issue in enumerate(issues_cfg, start=1):
-    issue_id = issue.get("id") or f"issue_{i}"
-    title = issue.get("title", issue_id)
-    definition = issue.get("definition", "")
-    data = llm.review(model=model, issue_id=issue_id, issue_definition=definition, full_text=raw_text)
-    data.setdefault("title", title)
-    results.append(data)
-    progress.progress(int(i/len(issues_cfg)*100))
+    try:
+        issue_id = issue.get("id") or f"issue_{i}"
+        title = issue.get("title", issue_id)
+        definition = issue.get("definition", "")
+        data = llm.review(model=model, issue_id=issue_id, issue_definition=definition, full_text=raw_text)
+        data.setdefault("title", title)
+        results.append(data)
+    except Exception as e:
+        st.exception(e)
+    finally:
+        progress.progress(int(i/len(issues_cfg)*100))
 progress.empty()
 
 found_list = [r for r in results if r.get("found")]
