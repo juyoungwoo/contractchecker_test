@@ -270,39 +270,58 @@ if st.button("🔍 분석 시작하기", type="primary"):
         st.session_state['results'] = results
         st.success("분석이 완료되었습니다.")
 
+# ✨ 리팩토링을 위한 후처리 함수 추가
+
+def group_and_deduplicate_issues(issues: List[Dict[str, Any]]) -> Dict[int, List[str]]:
+    """
+    clause_indices 기준으로 issue['explanation']을 그룹화하며,
+    동일한 explanation은 중복 제거.
+    """
+    grouped: Dict[int, List[str]] = defaultdict(list)
+    seen: set = set()
+
+    for issue in issues:
+        if not issue.get("found"): continue
+        explanations = issue.get("explanation", "").split("\n\n")
+        for explanation in explanations:
+            match = re.match(r"^\u26a0\ufe0f\s+제(\d+)조", explanation)
+            if not match: continue
+            clause_idx = int(match.group(1))
+            if explanation not in seen:
+                grouped[clause_idx].append(explanation)
+                seen.add(explanation)
+
+    return grouped
+
+# ✅ Streamlit UI 결과 출력 부분 리팩토링
 if 'results' in st.session_state:
     results = st.session_state['results']
     found_issues = [r for r in results if r.get("found")]
-    
+
     st.markdown("---")
     if not found_issues:
         st.success("✅ 검토 결과, '연구원'에게 특별히 불리한 독소 조항이 발견되지 않았습니다.")
-        
-    st.subheader("📄 검토가 필요한 조항")
-    
-    issue_clause_indices = sorted(list({idx for issue in found_issues for idx in issue.get("clause_indices", [])}))
-    clauses_with_issues = [c for c in clauses if c.idx in issue_clause_indices]
 
-    if not clauses_with_issues and found_issues:
-        st.warning("⚠️ 발견된 이슈와 매칭되는 조항을 UI에 표시하지 못했습니다. AI가 조항 번호를 제대로 인식하지 못했을 수 있습니다.")
+    st.subheader("📄 검토가 필요한 조항")
+
+    issue_groups = group_and_deduplicate_issues(found_issues)
+    if not issue_groups:
+        st.warning("⚠️ 문제 조항의 위치를 인식하지 못했습니다.")
     else:
-        for c in clauses_with_issues:
-            matched_issues = [r for r in found_issues if c.idx in r.get("clause_indices", [])]
-        
-            # ✅ 모든 evidence_quotes 수집 (하이라이트 용도)
-            filtered_quotes = [q for issue in matched_issues for q in issue.get("evidence_quotes", [])]
-        
-            # ✅ 강조 포함 텍스트 생성
-            highlighted_text = highlight_text(c.text, filtered_quotes)
-        
+        for c in clauses:
+            if c.idx not in issue_groups: continue
+
+            # 하이라이트용 모든 인용문 수집
+            quotes = [q for r in found_issues if c.idx in r.get("clause_indices", []) for q in r.get("evidence_quotes", [])]
+            highlighted = highlight_text(c.text, quotes)
+
             with st.container(border=True):
                 st.markdown(f"### 📄 {html.escape(c.title)}")
                 st.markdown(
-                    f"<div style='white-space: pre-wrap; font-size: 1rem; line-height: 1.8'>{highlighted_text}</div>",
+                    f"<div style='white-space: pre-wrap; font-size: 1rem; line-height: 1.8'>{highlighted}</div>",
                     unsafe_allow_html=True
                 )
-        
-                if matched_issues:
-                    st.markdown("---")
-                    for issue in matched_issues:
-                        st.markdown(issue.get("explanation", ""))
+                st.markdown("---")
+                for explanation in issue_groups[c.idx]:
+                    st.markdown(explanation)
+
