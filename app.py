@@ -68,36 +68,44 @@ def load_text_from_file(upload) -> str:
     return data.decode("utf-8", errors="ignore")
 
 # ---------------- Clause splitter (핵심 수정) ----------------
+# ---------------- Clause splitter (핵심 수정) ----------------
 def split_into_clauses_kokr(text: str) -> List[Clause]:
     """
-    '제 O조'를 기준으로 계약서를 정확하게 분할하는 새로운 로직.
-    finditer를 사용하여 각 조항의 시작점을 찾고, 그 사이의 텍스트를 추출하여 안정성을 높임.
+    '제 O조'가 새로운 줄(페이지 나뉨 포함)에서 시작될 때만 조항으로 인식하여 분할하는 로직.
+    페이지 나눔(연속된 개행)이나 명시적인 줄바꿈 뒤에 오는 조항만 정확히 추출.
     """
-    # "제 <숫자> 조" 패턴으로 계약서 분할 기준점을 찾는다.
-    header_pat = re.compile(r"제\s*\d+\s*조")
-    matches = list(header_pat.finditer(text))
+    # (^|\\n\\s*\\n) : 줄의 시작이거나, 두 번 이상의 개행(빈 줄) 뒤에
+    # 제\\s*\\d+\\s*조 : '제 <숫자> 조' 패턴이 오는 경우를 찾는다.
+    header_pat = re.compile(r"(?:^|\n\s*\n)(제\s*\d+\s*조)")
+    
+    # 원본 텍스트의 시작 부분에 가상의 개행을 추가하여 첫 조항도 패턴에 잡히도록 함
+    padded_text = "\n\n" + text
+    matches = list(header_pat.finditer(padded_text))
 
     if not matches:
         return []
 
     clauses = []
     for i, match in enumerate(matches):
-        start_pos = match.start()
-        # 다음 조항의 시작점을 현재 조항의 끝점으로 설정
-        end_pos = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        # 실제 조항 제목 시작 위치 (group(1)의 시작점)
+        start_pos = match.start(1)
         
-        clause_full_text = text[start_pos:end_pos].strip()
+        # 다음 조항의 시작점을 현재 조항의 끝점으로 설정
+        end_pos = matches[i + 1].start(1) if i + 1 < len(matches) else len(padded_text)
+        
+        # padded_text에서 조항 전체 텍스트를 추출하고 앞뒤 공백 제거
+        clause_full_text = padded_text[start_pos:end_pos].strip()
         
         # 조항 제목은 첫 줄로 설정
-        title = clause_full_text.split('\n', 1)[0].strip()
+        title_line = clause_full_text.split('\n', 1)[0].strip()
         
         # 조항 번호 추출
-        num_match = re.search(r'제\s*(\d+)\s*조', match.group(0))
+        num_match = re.search(r'제\s*(\d+)\s*조', title_line)
         if num_match:
             clause_idx = int(num_match.group(1))
-            body_only = clause_full_text[len(title):].lstrip()
-            clauses.append(Clause(idx=clause_idx, title=title, text=body_only))
-
+            # 제목 부분을 제외한 본문만 추출
+            body_only = clause_full_text[len(title_line):].lstrip()
+            clauses.append(Clause(idx=clause_idx, title=title_line, text=body_only))
             
     return clauses
 
