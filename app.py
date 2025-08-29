@@ -321,10 +321,6 @@ if 'results' in st.session_state:
                     
                     # 각 항별로 출력
                     for 항, 이슈목록 in 항별_이슈_그룹.items():
-                        if 항 == "기타":
-                            st.markdown(f"### 제{c.idx}조")
-                        else:
-                            st.markdown(f"### 제{c.idx}조 {항}항")
-                    
                         for issue in 이슈목록:
                             st.markdown(issue.get("explanation", ""))
+
