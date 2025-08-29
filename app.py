@@ -148,16 +148,22 @@ def load_issues_from_gsheet_private() -> List[Dict[str, Any]]:
     if not sa_json_str or not sheet_id:
         raise RuntimeError("Secrets에 GDRIVE_SERVICE_ACCOUNT_JSON / GSHEET_ID 가 필요합니다.")
 
-    # 서비스계정으로 접속
     import json as _json
-    gc = gspread.service_account_from_dict(_json.loads(sa_json_str))
+    
+    cfg = None
+    # Secrets에 [gcp_sa] 테이블이 있으면 그대로 사용
+    if "gcp_sa" in st.secrets:
+        cfg = dict(st.secrets["gcp_sa"])
+    # 기존처럼 문자열(JSON)로 넣었을 경우 fallback
+    elif sa_json_str:
+        cfg = _json.loads(sa_json_str)
+    
+    if not cfg:
+        raise RuntimeError("서비스계정 정보가 없습니다. Secrets에서 gcp_sa 테이블 또는 GDRIVE_SERVICE_ACCOUNT_JSON을 확인하세요.")
+    
+    gc = gspread.service_account_from_dict(cfg)
     sh = gc.open_by_key(sheet_id)
     ws = sh.worksheet(sheet_ws) if sheet_ws else sh.sheet1
-
-    rows = ws.get_all_values()  # 2D list
-    issues: List[Dict[str, Any]] = []
-    if not rows:
-        return issues
 
     # 첫 행이 헤더(id/title/definition)이면 스킵
     header = [c.strip().lower() for c in rows[0]] if rows else []
