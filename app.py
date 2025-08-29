@@ -302,7 +302,7 @@ if 'results' in st.session_state:
     if not found_issues:
         st.success("✅ 검토 결과, '연구원'에게 특별히 불리한 독소 조항이 발견되지 않았습니다.")
 
-    st.subheader("📄 검토가 필요한 조항")
+    st.subheader("검토가 필요한 조항")
 
     issue_groups = group_and_deduplicate_issues(found_issues)
     if not issue_groups:
