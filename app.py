@@ -174,6 +174,7 @@ def highlight_text(text: str, quotes: List[str]) -> str:
         if not q: continue
         try:
             escaped_q = html.escape(q)
+            # 공백/줄바꿈에 유연하게 대처하기 위한 정규식
             pattern = r'\s*'.join(map(re.escape, list(q)))
             safe_text = re.sub(f'({pattern})', r'<mark>\\1</mark>', safe_text, flags=re.IGNORECASE | re.UNICODE)
         except re.error:
@@ -227,29 +228,29 @@ if 'results' in st.session_state:
     else:
         st.error(f"🚨 총 {len(found_issues)}개의 잠재적 이슈가 발견되었습니다.")
     
-    # --- ✨ [수정된 부분] 문제 있는 조항만 표시하도록 로직 변경 ---
-    st.subheader("📄 계약서 조항별 검토 결과")
+    st.subheader("📄 검토가 필요한 조항")
     
     # 문제가 발견된 조항들의 인덱스만 추출
-    issue_clause_indices = {idx for issue in found_issues for idx in issue.get("clause_indices", [])}
+    issue_clause_indices = sorted(list({idx for issue in found_issues for idx in issue.get("clause_indices", [])}))
     
     # 문제가 발견된 조항들만 필터링
     clauses_with_issues = [c for c in clauses if c.idx in issue_clause_indices]
 
-    if not clauses_with_issues:
-        st.info("발견된 이슈와 매칭되는 조항이 없습니다. AI가 조항 번호를 제대로 인식하지 못했을 수 있습니다.")
+    if not clauses_with_issues and found_issues:
+        st.warning("⚠️ 발견된 이슈와 매칭되는 조항을 UI에 표시하지 못했습니다. AI가 조항 번호를 제대로 인식하지 못했을 수 있습니다.")
     else:
         for c in clauses_with_issues:
-            # 현재 조항에 해당하는 이슈들만 필터링
             matched_issues = [r for r in found_issues if c.idx in r.get("clause_indices", [])]
             
             all_quotes = [q for issue in matched_issues for q in issue.get("evidence_quotes", [])]
             highlighted_text = highlight_text(c.text, all_quotes)
             
             with st.container(border=True):
+                # 조항의 전체 내용 표시
                 st.markdown(f"### {html.escape(c.title)}")
                 st.markdown(f"<div style='white-space: pre-wrap; line-height: 1.7;'>{highlighted_text}</div>", unsafe_allow_html=True)
                 
+                # 해당 조항에 대한 AI의 분석 결과(설명) 표시
                 if matched_issues:
                     st.markdown("---")
                     for issue in matched_issues:
