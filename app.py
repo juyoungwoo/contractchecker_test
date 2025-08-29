@@ -157,7 +157,7 @@ class OpenAILLM:
             "You must respond in **KOREAN**. Return a **STRICT JSON object**.\n\n"
             "📌 **CRITICAL INSTRUCTIONS:**\n"
             "1.  **'연구원'의 입장에서 분석하십시오:** `CONTRACT`를 검토하여 '연구원'에게 불리하거나 위험한 조항을 식별하십시오.\n"
-            "2.  **정확한 조항 번호를 명시하십시오:** `CLAUSE_LIST`를 참고하여 제14조 나항 등으로 정확히 지정하십시오.\n"
+            "2.  **정확한 조항 번호를 명시하십시오:** `CLAUSE_LIST`를 참고하여 제14조 2항 등으로 정확히 지정하십시오.\n"
             "3.  **문제되는 문장을 명확히 추출하십시오:** 독소 조항이 있다면 **정확한 문장 또는 구절**을 지정해야 합니다.\n"
             "4.  **위험성 설명:** 해당 문구가 왜 연구원에게 불리한지를 명확하게 설명하십시오.\n"
             "5.  **원문 인용:** 인용은 반드시 **원문 그대로의 한국어 문장**이어야 하며, 절대 의역하지 마십시오.\n"
@@ -305,17 +305,20 @@ if 'results' in st.session_state:
                     for issue in matched_issues:
                         # 여러 증거가 있을 수 있으므로 첫 번째 증거를 기준으로 항을 찾습니다.
                         quote = issue["evidence_quotes"][0] if issue.get("evidence_quotes") else ""
-                        항_match = re.search(r'제?\s*([가-하])\s*항|([가-하])\.', quote)
-                        항_label = 항_match.group(1) or 항_match.group(2) if 항_match else None
+                        항_match = re.search(
+                            r'제?\s*(?P<label>\d+|[가-하]|[①-⑳])\s*항|(?P<label2>\d+|[가-하]|[①-⑳])\.', 
+                            quote
+                        )
+                        항_label = 항_match.group("label") or 항_match.group("label2") if 항_match else None
                         key = 항_label if 항_label else "기타"
                         항별_이슈_그룹[key].append(issue)
                     
                     # 각 항별로 출력
                     for 항, 이슈목록 in 항별_이슈_그룹.items():
                         if 항 == "기타":
-                            st.markdown(f"### ⚠️ 제{c.idx}조")
+                            st.markdown(f"### 제{c.idx}조")
                         else:
-                            st.markdown(f"### ⚠️ 제{c.idx}조 {항}항")
+                            st.markdown(f"### 제{c.idx}조 {항}항")
                     
                         for issue in 이슈목록:
                             st.markdown(issue.get("explanation", ""))
