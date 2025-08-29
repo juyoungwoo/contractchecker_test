@@ -94,7 +94,9 @@ def split_into_clauses_kokr(text: str) -> List[Clause]:
         num_match = re.search(r'제\s*(\d+)\s*조', match.group(0))
         if num_match:
             clause_idx = int(num_match.group(1))
-            clauses.append(Clause(idx=clause_idx, title=title, text=clause_full_text))
+            body_only = clause_full_text[len(title):].lstrip()
+            clauses.append(Clause(idx=clause_idx, title=title, text=body_only))
+
             
     return clauses
 
@@ -193,9 +195,10 @@ def highlight_text(text: str, quotes: List[str]) -> str:
         if q_escaped in escaped:
             escaped = escaped.replace(q_escaped, f"<mark>{q_escaped}</mark>")
         else:
-            # fallback: 원본 텍스트에서 직접 교체 (줄바꿈 포함된 경우)
+            raw_marked = f"<mark>{quote}</mark>"
             if quote in text:
-                escaped = escaped.replace(html.escape(quote), f"<mark>{html.escape(quote)}</mark>")
+                escaped = escaped.replace(html.escape(quote), html.escape(raw_marked))
+
 
     # 최종적으로 <mark>만 원상복구
     return escaped.replace("&lt;mark&gt;", "<mark>").replace("&lt;/mark&gt;", "</mark>")
@@ -278,8 +281,9 @@ if 'results' in st.session_state:
                     for issue in matched_issues:
                         clause_num = issue.get("clause_indices", [c.idx])[0]
                         quote = issue["evidence_quotes"][0] if issue.get("evidence_quotes") else ""
-                        항_match = re.search(r'([가-하])\.', quote)
-                        항_label = 항_match.group(1) if 항_match else None
+                        항_match = re.search(r'제?\s*([가-하])\s*항|([가-하])\.', quote)
+                        항_label = 항_match.group(1) or 항_match.group(2) if 항_match else None
+
         
                         if 항_label:
                             st.markdown(f"### ⚠️ 제{clause_num}조 {항_label}항 — 다음과 같은 문제가 있습니다")
