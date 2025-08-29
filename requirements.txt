@@ -2,10 +2,5 @@ streamlit
 openai
 pypdf
 python-docx
-tiktoken
-requests
-pyyaml
-pydrive2
+gspread
 google-auth
-google-auth-oauthlib
-google-auth-httplib2
