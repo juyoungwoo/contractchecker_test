@@ -119,7 +119,7 @@ def load_issues_from_gsheet_private() -> List[Dict[str, Any]]:
     sheet_id = st.secrets.get("GSHEET_ID", "").strip()
     ws_name  = (st.secrets.get("GSHEET_WORKSHEET", "독소조항_예시")).strip()
     if not sheet_id: st.error("Streamlit Secrets에 Google Sheet ID가 설정되지 않았습니다."); return []
-    scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly", "https://www.googleapis.com/auth/drive.readonly"]
+    scopes = ["https.www.googleapis.com/auth/spreadsheets.readonly", "https.www.googleapis.com/auth/drive.readonly"]
     creds = Credentials.from_service_account_info(cfg, scopes=scopes)
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(sheet_id)
@@ -155,16 +155,17 @@ class OpenAILLM:
             "**CRITICAL INSTRUCTIONS:**\n"
             "1.  **Analyze from '연구원's' Perspective:** Review the `CONTRACT` and identify clauses that are unfavorable to the '연구원'.\n"
             "2.  **Identify Clause Numbers:** Use the `CLAUSE_LIST` to determine the correct clause number (e.g., 제14조 is clause 14).\n"
-            "3.  **Find Specific Evidence:** If you find a toxic clause, you MUST pinpoint the **exact problematic sentence or phrase**.\n"
-            "4.  **Explain the Risk (for '연구원'):** Clearly explain WHY that specific phrase is a problem **from the '연구원's' point of view**.\n"
-            "5.  **Quote Original Phrases:** Extract **the original Korean phrase(s)** as-is for the quotes. Do NOT paraphrase.\n"
-            "6.  **Focus on Specific Parts:** Try to extract as small and specific a phrase as possible (such as a sentence or clause).\n"
-            "7.  **These quotes will be highlighted in bold in the UI. Choose your evidence carefully.**\n"
-            "8.  **JSON OUTPUT:** Your output MUST be a single JSON object with this exact schema:\n"
+            "3.  **Handle Cross-References:** If a problematic clause refers to another clause (e.g., '제6조를 준용한다'), you MUST also include the referenced clause number in the `clause_indices` array. This is crucial for providing full context.\n"
+            "4.  **Find Specific Evidence:** If you find a toxic clause, you MUST pinpoint the **exact problematic sentence or phrase**.\n"
+            "5.  **Explain the Risk (for '연구원'):** Clearly explain WHY that specific phrase is a problem **from the '연구원's' point of view**.\n"
+            "6.  **Quote Original Phrases:** Extract **the original Korean phrase(s)** as-is for the quotes. Do NOT paraphrase.\n"
+            "7.  **Focus on Specific Parts:** Try to extract as small and specific a phrase as possible (such as a sentence or clause).\n"
+            "8.  **These quotes will be highlighted in bold in the UI. Choose your evidence carefully.**\n"
+            "9.  **JSON OUTPUT:** Your output MUST be a single JSON object with this exact schema:\n"
             "    {\n"
             f"      \"issue_id\": \"{issue_id}\", \"issue_title\": \"{issue_title}\", \"found\": boolean,\n"
             "      \"explanation\": \"(Provide a clear, concise, and intuitive explanation in Korean **from the '연구원's' perspective**. Start with an emoji.)\",\n"
-            "      \"clause_indices\": number[], /* IMPORTANT: If `found` is true, this array MUST contain the clause number(s) and CANNOT be empty. */\n"
+            "      \"clause_indices\": number[], /* IMPORTANT: If `found` is true, this array MUST contain the clause number(s) (including any cross-referenced clauses) and CANNOT be empty. */\n"
             "      \"evidence_quotes\": string[] /* IMPORTANT: If `found` is true, this array MUST contain the exact quote(s) and CANNOT be empty. */\n"
             "    }\n"
         )
