@@ -66,30 +66,20 @@ def load_text_from_file(upload) -> str:
         except Exception: continue
     return data.decode("utf-8", errors="ignore")
 
-# ---------------- Clause splitter (핵심 수정) ----------------
+# ---------------- Clause splitter ----------------
 def split_into_clauses_kokr(text: str) -> List[Clause]:
-    """
-    '제 O조'를 기준으로 계약서를 정확하게 분할하는 새로운 로직.
-    """
-    # "제 <숫자> 조" 패턴으로 계약서를 분할할 기준점을 찾는다.
     pat = re.compile(r"(제\s*\d+\s*조)")
     parts = pat.split(text)
     
     if len(parts) <= 1: return []
 
     clauses = []
-    # 분할 결과는 ['', '제1조', '1조 내용...', '제2조', '2조 내용...'] 형태로 나온다.
-    # 짝수 인덱스는 조항 내용, 홀수 인덱스는 조항 구분자('제 O조')이다.
     for i in range(1, len(parts), 2):
         delimiter = parts[i]
         content = parts[i+1].strip() if (i+1) < len(parts) else ""
-        
-        full_clause_text = (delimiter + content).strip()
-        
-        # 제목은 전체 조항 내용의 첫 번째 줄로 정한다.
+        full_clause_text = (delimiter + " " + content).strip()
         title = full_clause_text.split('\n', 1)[0].strip()
         
-        # 조항 번호를 정확히 추출한다.
         match = re.search(r'제\s*(\d+)\s*조', delimiter)
         if match:
             clause_idx = int(match.group(1))
@@ -98,16 +88,6 @@ def split_into_clauses_kokr(text: str) -> List[Clause]:
     return clauses
 
 # ---------------- Google Sheet loader ----------------
-def _normalize(s: str) -> str: return unicodedata.normalize("NFC", (s or "").strip()).lower()
-
-def _open_worksheet_robust(sh, target_name: Optional[str]):
-    if not target_name: return sh.sheet1
-    try: return sh.worksheet(target_name)
-    except Exception: pass
-    for ws in sh.worksheets():
-        if _normalize(ws.title) == _normalize(target_name): return ws
-    return sh.sheet1
-
 def _read_secrets_gcp_sa() -> Optional[Dict[str, Any]]:
     import json as _json
     if "gcp_sa" in st.secrets: return dict(st.secrets["gcp_sa"])
@@ -129,7 +109,7 @@ def load_issues_from_gsheet_private() -> List[Dict[str, Any]]:
     creds = Credentials.from_service_account_info(cfg, scopes=scopes)
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(sheet_id)
-    ws = _open_worksheet_robust(sh, ws_name)
+    ws = sh.worksheet(ws_name)
     rows = ws.get_all_values()
     issues = []
     if not rows: return issues
@@ -192,8 +172,9 @@ def highlight_text(text: str, quotes: List[str]) -> str:
         if not q: continue
         try:
             escaped_q = html.escape(q)
-            pattern = r'\s*'.join(map(re.escape, list(escaped_q.replace(' ',''))))
-            safe_text = re.sub(f'({pattern})', r'<mark>\1</mark>', safe_text, flags=re.IGNORECASE)
+            # 공백/줄바꿈에 유연하게 대처하기 위한 정규식
+            pattern = r'\s*'.join(map(re.escape, list(q)))
+            safe_text = re.sub(f'({pattern})', r'<mark>\1</mark>', safe_text, flags=re.IGNORECASE | re.UNICODE)
         except re.error:
             safe_text = safe_text.replace(html.escape(q), f"<mark>{html.escape(q)}</mark>")
     return safe_text
@@ -246,8 +227,8 @@ if 'results' in st.session_state:
     else:
         st.error(f"🚨 총 {len(found_issues)}개의 잠재적 이슈가 발견되었습니다.")
     
-    # 조항에 매칭되지 않은 이슈들을 먼저 표시
-    assigned_clause_indices = {idx for c in clauses for idx in c.idx if isinstance(c.idx, int)}
+    # --- ✨ [수정된 부분] 오류 코드 수정 ---
+    assigned_clause_indices = {c.idx for c in clauses}
     unassigned_issues = [
         r for r in found_issues 
         if not any(idx in assigned_clause_indices for idx in r.get("clause_indices", []))
