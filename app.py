@@ -218,16 +218,20 @@ class OpenAILLM:
             "- Output STRICT JSON with this schema and NOTHING else.\n\n"
             "{\n  \"issue_id\": string,\n  \"found\": boolean,\n  \"explanation\": string,\n  \"clause_indices\": number[],\n  \"evidence_quotes\": string[]\n}"
         )
-        resp = self.client.responses.create(
+       # app.py의 OpenAILLM.review 메서드 (수정된 버전)
+
+        resp = self.client.chat.completions.create( # <--- 수정 (1)
             model=model,
-            input=[
+            messages=[ # <--- 수정 (2)
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
             response_format={"type": "json_object"},
         )
         try:
-            text = resp.output_text  # type: ignore[attr-defined]
+            text = resp.choices[0].message.content # <--- 수정 (3)
+            if not text:
+                text = "{}"
         except Exception:
             text = "{}"
         try:
