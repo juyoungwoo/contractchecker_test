@@ -8,6 +8,7 @@ from __future__ import annotations
 import os, io, re, json, time, uuid, html, unicodedata
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
+from collections import defaultdict
 
 import streamlit as st
 from pypdf import PdfReader
@@ -278,17 +279,21 @@ if 'results' in st.session_state:
                 # 3. 각 이슈에 대해 항 구분해서 설명 출력
                 if matched_issues:
                     st.markdown("---")
+                    항별_이슈_그룹 = defaultdict(list)
+                    
                     for issue in matched_issues:
-                        clause_num = issue.get("clause_indices", [c.idx])[0]
                         quote = issue["evidence_quotes"][0] if issue.get("evidence_quotes") else ""
                         항_match = re.search(r'제?\s*([가-하])\s*항|([가-하])\.', quote)
                         항_label = 항_match.group(1) or 항_match.group(2) if 항_match else None
-
-        
-                        if 항_label:
-                            st.markdown(f"### ⚠️ 제{clause_num}조 {항_label}항 — 다음과 같은 문제가 있습니다")
+                        key = 항_label if 항_label else "기타"
+                        항별_이슈_그룹[key].append(issue)
+                    
+                    # 각 항별로 출력
+                    for 항, 이슈목록 in 항별_이슈_그룹.items():
+                        if 항 == "기타":
+                            st.markdown(f"### ⚠️ 제{c.idx}조")
                         else:
-                            st.markdown(f"### ⚠️ 제{clause_num}조 — 다음과 같은 문제가 있습니다")
-        
-                        st.markdown(issue.get("explanation", ""))
-
+                            st.markdown(f"### ⚠️ 제{c.idx}조 {항}항")
+                    
+                        for issue in 이슈목록:
+                            st.markdown(issue.get("explanation", ""))
