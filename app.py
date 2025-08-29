@@ -289,17 +289,8 @@ if 'results' in st.session_state:
         for c in clauses_with_issues:
             matched_issues = [r for r in found_issues if c.idx in r.get("clause_indices", [])]
         
-            # ✅ 실제 조문에 존재하는 문장만 필터링
-            filtered_quotes = []
-            filtered_issues = []
-            for issue in matched_issues:
-                quotes = issue.get("evidence_quotes", [])
-                quotes_in_clause = [q for q in quotes if q.strip() and q.strip() in c.text]
-                if quotes_in_clause:
-                    new_issue = issue.copy()
-                    new_issue["evidence_quotes"] = quotes_in_clause
-                    filtered_issues.append(new_issue)
-                    filtered_quotes.extend(quotes_in_clause)
+            # ✅ 모든 evidence_quotes 수집 (하이라이트 용도)
+            filtered_quotes = [q for issue in matched_issues for q in issue.get("evidence_quotes", [])]
         
             # ✅ 강조 포함 텍스트 생성
             highlighted_text = highlight_text(c.text, filtered_quotes)
@@ -311,21 +302,7 @@ if 'results' in st.session_state:
                     unsafe_allow_html=True
                 )
         
-                if filtered_issues:
+                if matched_issues:
                     st.markdown("---")
-                    항별_이슈_그룹 = defaultdict(list)
-                    for issue in filtered_issues:
-                        quote = issue["evidence_quotes"][0] if issue.get("evidence_quotes") else ""
-                        항_match = re.search(
-                            r'제?\s*(?P<label>\d+|[가-하]|[①-⑳])\s*항|(?P<label2>\d+|[가-하]|[①-⑳])\.', 
-                            quote
-                        )
-                        항_label = 항_match.group("label") or 항_match.group("label2") if 항_match else None
-                        key = 항_label if 항_label else "기타"
-                        항별_이슈_그룹[key].append(issue)
-                    
-                    for 항, 이슈목록 in 항별_이슈_그룹.items():
-                        for issue in 이슈목록:
-                            st.markdown(issue.get("explanation", ""))
-
-
+                    for issue in matched_issues:
+                        st.markdown(issue.get("explanation", ""))
