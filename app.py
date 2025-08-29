@@ -139,33 +139,42 @@ def split_into_clauses_kokr(text: str) -> List[Clause]:
 
 
 # --------------- Google Sheet loader ---------------
+# --------------- Google Sheet loader ---------------
 def load_issues_from_gsheet_private() -> List[Dict[str, Any]]:
     if not GSHEETS_AVAILABLE:
         raise RuntimeError("gspread 패키지가 필요합니다. requirements.txt를 확인하세요.")
+
+    # ✅ Secrets 읽기 (테이블 우선, 문자열 fallback)
+    import json as _json
+    cfg = None
+    if "gcp_sa" in st.secrets:
+        cfg = dict(st.secrets["gcp_sa"])  # TOML 테이블로 넣은 경우
     sa_json_str = st.secrets.get("GDRIVE_SERVICE_ACCOUNT_JSON", "").strip()
+    if not cfg and sa_json_str:
+        cfg = _json.loads(sa_json_str)  # 예전 JSON 문자열 방식
+
+    # ✅ private_key 줄바꿈 보정 (JSON 문자열 방식일 때 \n → 실제 개행)
+    if cfg and isinstance(cfg.get("private_key"), str):
+        pk = cfg["private_key"]
+        if "\\n" in pk and "\n" not in pk:
+            cfg["private_key"] = pk.replace("\\n", "\n")
+
     sheet_id = st.secrets.get("GSHEET_ID", "").strip()
     sheet_ws = st.secrets.get("GSHEET_WORKSHEET", "").strip() or None
-    if not sa_json_str or not sheet_id:
-        raise RuntimeError("Secrets에 GDRIVE_SERVICE_ACCOUNT_JSON / GSHEET_ID 가 필요합니다.")
 
-    import json as _json
-    
-    cfg = None
-    # Secrets에 [gcp_sa] 테이블이 있으면 그대로 사용
-    if "gcp_sa" in st.secrets:
-        cfg = dict(st.secrets["gcp_sa"])
-    # 기존처럼 문자열(JSON)로 넣었을 경우 fallback
-    elif sa_json_str:
-        cfg = _json.loads(sa_json_str)
-    
-    if not cfg:
-        raise RuntimeError("서비스계정 정보가 없습니다. Secrets에서 gcp_sa 테이블 또는 GDRIVE_SERVICE_ACCOUNT_JSON을 확인하세요.")
-    
+    if not cfg or not sheet_id:
+        raise RuntimeError("서비스계정/시트 설정이 없습니다. Secrets의 [gcp_sa] 또는 GDRIVE_SERVICE_ACCOUNT_JSON, 그리고 GSHEET_ID를 확인하세요.")
+
+    # ✅ 서비스계정으로 접속
     gc = gspread.service_account_from_dict(cfg)
     sh = gc.open_by_key(sheet_id)
     ws = sh.worksheet(sheet_ws) if sheet_ws else sh.sheet1
 
-    # 첫 행이 헤더(id/title/definition)이면 스킵
+    rows = ws.get_all_values()  # 2D list
+    issues: List[Dict[str, Any]] = []
+    if not rows:
+        return issues
+
     header = [c.strip().lower() for c in rows[0]] if rows else []
     start_idx = 1 if set(["id", "title", "definition"]).intersection(set(header)) else 0
 
@@ -183,6 +192,7 @@ def load_issues_from_gsheet_private() -> List[Dict[str, Any]]:
             "definition": c,
         })
     return issues
+
 
 
 # --------------- LLM provider ---------------
