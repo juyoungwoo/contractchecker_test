@@ -102,10 +102,7 @@ def load_text_from_file(upload) -> str:
     try:
         return data.decode("utf-8")
     except Exception:
-        try:
-            return data.decode("euc-kr", errors="ignore")
-        except Exception:
-            return data.decode("latin-1", errors="ignore")
+        return data.decode("cp949", errors="ignore")  # Python 3.10에서는 이게 잘 작동함
 
 
 # --------------- Clause splitter ---------------
