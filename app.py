@@ -268,7 +268,7 @@ if st.button("🔍 분석 시작하기", type="primary"):
         ) for issue in issues_cfg]
         
         st.session_state['results'] = results
-        st.success("🎉 분석이 완료되었습니다!")
+        st.success("분석이 완료되었습니다.")
 
 if 'results' in st.session_state:
     results = st.session_state['results']
@@ -277,8 +277,7 @@ if 'results' in st.session_state:
     st.markdown("---")
     if not found_issues:
         st.success("✅ 검토 결과, '연구원'에게 특별히 불리한 독소 조항이 발견되지 않았습니다.")
-    
-    
+        
     st.subheader("📄 검토가 필요한 조항")
     
     issue_clause_indices = sorted(list({idx for issue in found_issues for idx in issue.get("clause_indices", [])}))
@@ -289,27 +288,33 @@ if 'results' in st.session_state:
     else:
         for c in clauses_with_issues:
             matched_issues = [r for r in found_issues if c.idx in r.get("clause_indices", [])]
-            all_quotes = [q for issue in matched_issues for q in issue.get("evidence_quotes", [])]
         
-            highlighted_text = highlight_text(c.text, all_quotes)
+            # ✅ 실제 조문에 존재하는 문장만 필터링
+            filtered_quotes = []
+            filtered_issues = []
+            for issue in matched_issues:
+                quotes = issue.get("evidence_quotes", [])
+                quotes_in_clause = [q for q in quotes if q.strip() and q.strip() in c.text]
+                if quotes_in_clause:
+                    new_issue = issue.copy()
+                    new_issue["evidence_quotes"] = quotes_in_clause
+                    filtered_issues.append(new_issue)
+                    filtered_quotes.extend(quotes_in_clause)
+        
+            # ✅ 강조 포함 텍스트 생성
+            highlighted_text = highlight_text(c.text, filtered_quotes)
         
             with st.container(border=True):
-                # 1. 전체 조 제목
                 st.markdown(f"### 📄 {html.escape(c.title)}")
-        
-                # 2. 전체 조 내용 (강조 포함)
                 st.markdown(
                     f"<div style='white-space: pre-wrap; font-size: 1rem; line-height: 1.8'>{highlighted_text}</div>",
                     unsafe_allow_html=True
                 )
         
-                # 3. 각 이슈에 대해 항 구분해서 설명 출력
-                if matched_issues:
+                if filtered_issues:
                     st.markdown("---")
                     항별_이슈_그룹 = defaultdict(list)
-                    
-                    for issue in matched_issues:
-                        # 여러 증거가 있을 수 있으므로 첫 번째 증거를 기준으로 항을 찾습니다.
+                    for issue in filtered_issues:
                         quote = issue["evidence_quotes"][0] if issue.get("evidence_quotes") else ""
                         항_match = re.search(
                             r'제?\s*(?P<label>\d+|[가-하]|[①-⑳])\s*항|(?P<label2>\d+|[가-하]|[①-⑳])\.', 
@@ -319,8 +324,8 @@ if 'results' in st.session_state:
                         key = 항_label if 항_label else "기타"
                         항별_이슈_그룹[key].append(issue)
                     
-                    # 각 항별로 출력
                     for 항, 이슈목록 in 항별_이슈_그룹.items():
                         for issue in 이슈목록:
                             st.markdown(issue.get("explanation", ""))
+
 
