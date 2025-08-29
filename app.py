@@ -302,7 +302,7 @@ if 'results' in st.session_state:
     if not found_issues:
         st.success("✅ 검토 결과, '연구원'에게 특별히 불리한 독소 조항이 발견되지 않았습니다.")
 
-    st.markdown("<h2 style='font-size: 1.8em;'> 검토가 필요한 조항</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='font-size: 2.2em;'> 검토가 필요한 조항</h2>", unsafe_allow_html=True)
 
     issue_groups = group_and_deduplicate_issues(found_issues)
     if not issue_groups:
