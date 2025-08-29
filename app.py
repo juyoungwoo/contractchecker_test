@@ -179,17 +179,27 @@ class OpenAILLM:
 
 # ---------------- Highlight helper ----------------
 def highlight_text(text: str, quotes: List[str]) -> str:
-    safe_text = html.escape(text)
-    for q in quotes:
-        q = q.strip()
-        if not q: continue
-        try:
-            escaped_q = html.escape(q)
-            pattern = r'\s*'.join(map(re.escape, list(q)))
-            safe_text = re.sub(f'({pattern})', r'<mark>\\1</mark>', safe_text, flags=re.IGNORECASE | re.UNICODE)
-        except re.error:
-            safe_text = safe_text.replace(html.escape(q), f"<mark>{html.escape(q)}</mark>")
-    return safe_text
+    """
+    HTML escape와 mark 태그 중첩 문제를 방지하면서 인용문 강조.
+    """
+    escaped = html.escape(text)
+
+    for quote in quotes:
+        quote = quote.strip()
+        if not quote:
+            continue
+        q_escaped = html.escape(quote)
+        # 마크업이 HTML 이스케이프와 충돌하지 않도록 escape 이후 <mark> 복원
+        if q_escaped in escaped:
+            escaped = escaped.replace(q_escaped, f"<mark>{q_escaped}</mark>")
+        else:
+            # fallback: 원본 텍스트에서 직접 교체 (줄바꿈 포함된 경우)
+            if quote in text:
+                escaped = escaped.replace(html.escape(quote), f"<mark>{html.escape(quote)}</mark>")
+
+    # 최종적으로 <mark>만 원상복구
+    return escaped.replace("&lt;mark&gt;", "<mark>").replace("&lt;/mark&gt;", "</mark>")
+
 
 # ---------------- UI ----------------
 st.set_page_config(page_title="계약서 독소 조항 분석기", layout="wide")
@@ -248,17 +258,33 @@ if 'results' in st.session_state:
     else:
         for c in clauses_with_issues:
             matched_issues = [r for r in found_issues if c.idx in r.get("clause_indices", [])]
-            
             all_quotes = [q for issue in matched_issues for q in issue.get("evidence_quotes", [])]
+        
             highlighted_text = highlight_text(c.text, all_quotes)
-            
+        
             with st.container(border=True):
-                st.markdown(f"### {html.escape(c.title)}")
-                st.markdown(f"<div style='white-space: pre-wrap; line-height: 1.7;'>{highlighted_text}</div>", unsafe_allow_html=True)
-                
+                # 1. 전체 조 제목
+                st.markdown(f"### 📄 {html.escape(c.title)}")
+        
+                # 2. 전체 조 내용 (강조 포함)
+                st.markdown(
+                    f"<div style='white-space: pre-wrap; font-size: 1rem; line-height: 1.8'>{highlighted_text}</div>",
+                    unsafe_allow_html=True
+                )
+        
+                # 3. 각 이슈에 대해 항 구분해서 설명 출력
                 if matched_issues:
                     st.markdown("---")
                     for issue in matched_issues:
-                        with st.chat_message("assistant", avatar="⚠️"):
-                            st.markdown(f"**{issue.get('issue_title')}**")
-                            st.markdown(issue.get('explanation', ''))
+                        clause_num = issue.get("clause_indices", [c.idx])[0]
+                        quote = issue["evidence_quotes"][0] if issue.get("evidence_quotes") else ""
+                        항_match = re.search(r'([가-하])\.', quote)
+                        항_label = 항_match.group(1) if 항_match else None
+        
+                        if 항_label:
+                            st.markdown(f"### ⚠️ 제{clause_num}조 {항_label}항 — 다음과 같은 문제가 있습니다")
+                        else:
+                            st.markdown(f"### ⚠️ 제{clause_num}조 — 다음과 같은 문제가 있습니다")
+        
+                        st.markdown(issue.get("explanation", ""))
+
